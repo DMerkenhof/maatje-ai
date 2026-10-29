@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#0181fb" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#064a9e" media="(prefers-color-scheme: dark)">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="apple-touch-icon" href="/icon-180.png">
+  <link rel="manifest" href="/manifest.json">
+  <meta name="apple-mobile-web-app-title" content="Maatje AI">
+  <title>Maatje AI</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/fonts/inter/latin-400.css">
+  <link rel="stylesheet" href="/fonts/inter/latin-500.css">
+  <link rel="stylesheet" href="/fonts/inter/latin-600.css">
+  <link rel="stylesheet" href="/fonts/inter/latin-700.css">
+  <link rel="stylesheet" href="/fonts/poppins/latin-700.css">
+  <link rel="stylesheet" href="/fonts/fraunces/latin-500-italic.css">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">Maatje <em>AI</em></div>
+      <div class="sidebar-top">
+        <button class="btn-new" id="newChat" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          Nieuwe chat
+        </button>
+      </div>
+      <nav class="chat-list" id="chatList" aria-label="Chats"></nav>
+      <div class="sidebar-bottom">
+        <button class="side-link" id="memoryBtn" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5zM5 19.5A1.5 1.5 0 0 0 6.5 21H19M9 7h6"/></svg>
+          Memory
+          <span class="badge" id="memoryBadge" hidden></span>
+        </button>
+        <button class="side-link" id="skillsBtn" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z"/></svg>
+          Skills
+        </button>
+        <button class="side-link" id="mcpBtn" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3v4M15 3v4M7 7h10v4a5 5 0 0 1-10 0zM12 16v5"/></svg>
+          MCP
+          <span class="badge" id="mcpBadge" hidden></span>
+        </button>
+        <button class="side-link" id="logoutBtn" type="button" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l-5-5 5-5M5 12h11"/></svg>
+          Uitloggen
+        </button>
+      </div>
+    </aside>
+    <div class="scrim" id="scrim"></div>
+
+    <main class="main">
+      <header class="topbar">
+        <button class="icon-btn menu-btn" id="menuBtn" type="button" aria-label="Chats tonen">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+        <button class="title" id="chatTitle" type="button" title="Naam wijzigen">Nieuwe chat</button>
+        <select class="effort-sel" id="effortSel" aria-label="Nadenken" hidden></select>
+        <button class="model-btn" id="modelBtn" type="button">
+          <span id="modelLabel">Kies model</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5"/></svg>
+        </button>
+      </header>
+
+      <section class="messages" id="messages" aria-live="polite"></section>
+
+      <form class="composer" id="composer">
+        <div class="slash-menu" id="slashMenu" role="listbox" aria-label="Skills" hidden></div>
+        <div class="composer-box">
+          <textarea id="input" rows="1" placeholder="Bericht" autocomplete="off"></textarea>
+          <button type="submit" class="send" id="sendBtn" aria-label="Versturen">
+            <svg class="i-send" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+            <svg class="i-stop" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
+          </button>
+        </div>
+      </form>
+    </main>
+  </div>
+
+  <div class="picker" id="picker" hidden>
+    <div class="picker-panel" role="dialog" aria-label="Model kiezen">
+      <div class="picker-head">
+        <input id="modelSearch" type="search" placeholder="Zoek op naam of aanbieder" autocomplete="off" spellcheck="false">
+        <button class="text-btn" id="pickerClose" type="button">Sluiten</button>
+      </div>
+      <div class="picker-list" id="modelList"></div>
+    </div>
+  </div>
+
+  <div class="sheet" id="memorySheet" hidden>
+    <div class="sheet-panel" role="dialog" aria-label="Memory">
+      <div class="sheet-head">
+        <button class="text-btn" id="memBack" type="button" hidden>‹ Terug</button>
+        <div class="sheet-title" id="memTitle">Memory</div>
+        <button class="text-btn" id="memClose" type="button">Sluiten</button>
+      </div>
+      <div class="sheet-body" id="memBody"></div>
+    </div>
+  </div>
+
+  <div class="sheet" id="skillSheet" hidden>
+    <div class="sheet-panel" role="dialog" aria-label="Skills">
+      <div class="sheet-head">
+        <button class="text-btn" id="skillBack" type="button" hidden>‹ Terug</button>
+        <div class="sheet-title" id="skillTitle">Skills</div>
+        <button class="text-btn" id="skillClose" type="button">Sluiten</button>
+      </div>
+      <div class="sheet-body" id="skillBody"></div>
+    </div>
+  </div>
+  <input type="file" id="skillFile" accept=".zip,.skill,.md,.markdown,.txt" multiple hidden>
+
+  <div class="sheet" id="mcpSheet" hidden>
+    <div class="sheet-panel" role="dialog" aria-label="MCP">
+      <div class="sheet-head">
+        <button class="text-btn" id="mcpBack" type="button" hidden>‹ Terug</button>
+        <div class="sheet-title" id="mcpTitle">MCP</div>
+        <button class="text-btn" id="mcpClose" type="button">Sluiten</button>
+      </div>
+      <div class="sheet-body" id="mcpBody"></div>
+    </div>
+  </div>
+
+  <div class="login" id="login" hidden>
+    <form class="login-box" id="loginForm">
+      <div class="login-brand">Maatje <em>AI</em></div>
+      <input id="loginPassword" type="password" placeholder="Wachtwoord" autocomplete="current-password" required>
+      <button class="btn-primary" type="submit">Inloggen</button>
+      <div class="login-msg" id="loginMsg"></div>
+    </form>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+services:
+  chat:
+    build: .
+    container_name: maatje-ai
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - DATA_DIR=/data
+      - PORT=3080
+      - TZ=Europe/Amsterdam
+    volumes:
+      # Alles wat bewaard moet blijven staat in ./data (gesprekken, memory, skills, MCP-logins).
+      - ./data:/data
+    ports:
+      # Alleen bereikbaar op deze computer zelf. Via Tailscale maak je hem veilig bereikbaar
+      # op je andere apparaten (zie README). Wil je hem op je thuisnetwerk, maak er dan
+      # "3080:3080" van en laat het wachtwoord aan.
+      - "127.0.0.1:3080:3080"

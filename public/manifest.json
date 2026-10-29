@@ -1,0 +1,12 @@
+{
+  "name": "Maatje AI",
+  "short_name": "Maatje AI",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0181fb",
+  "theme_color": "#0181fb",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

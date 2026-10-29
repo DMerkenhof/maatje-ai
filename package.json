@@ -1,0 +1,25 @@
+{
+  "name": "maatje-ai",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Eigen AI-chat om zelf te hosten: elk model via OpenRouter of lokaal met Ollama, met eigen memory, skills en MCP",
+  "license": "AGPL-3.0-or-later",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server/index.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "@fontsource/fraunces": "^5.3.0",
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/poppins": "^5.3.0",
+    "@hono/node-server": "^2.1.5",
+    "@modelcontextprotocol/client": "^2.4.0",
+    "dompurify": "^3.4.17",
+    "fflate": "^0.8.3",
+    "hono": "^4.13.14",
+    "marked": "^18.1.2"
+  }
+}

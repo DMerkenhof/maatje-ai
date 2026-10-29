@@ -1,0 +1,8 @@
+node_modules
+data
+.env
+*.tar.gz
+memory-import
+skills-import
+docs
+.git
