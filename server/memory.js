@@ -597,9 +597,9 @@ export function buildMemoryContext({ recentText = '', withTool = false, compact 
 
   const parts = [
     '## Geheugen',
-    'Hieronder staat wat je weet over de gebruiker, uit eerdere gesprekken. Gebruik het alleen als het je antwoord echt beter maakt, en verwerk het natuurlijk: zeg niet "volgens mijn geheugen" of "ik zie in je bestanden". Begin niet ongevraagd over gevoelige of vervelende dingen; wacht tot de gebruiker er zelf over begint.',
+    'Hieronder staat wat je weet over de gebruiker, uit eerdere gesprekken. Het gaat over hem, niet over jou: neem nooit zijn naam, rol of bedrijf over als die van jezelf. Gebruik het alleen als het je antwoord echt beter maakt, en verwerk het natuurlijk: zeg niet "volgens mijn geheugen" of "ik zie in je bestanden". Begin niet ongevraagd over gevoelige of vervelende dingen; wacht tot de gebruiker er zelf over begint.',
   ];
-  if (profile) parts.push(`### Profiel\n${profile}`);
+  if (profile) parts.push(`### Profiel van de gebruiker (over hem, niet over jou)\n${profile}`);
   if (prefs) parts.push(`### Voorkeuren van de gebruiker (volg deze altijd)\n${prefs}`);
   if (listing) {
     parts.push(
@@ -621,7 +621,11 @@ export function buildSystemPrompt(opts = {}) {
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
   }).format(new Date());
 
-  const parts = [`Vandaag is het ${today}.`];
+  const parts = [
+    // Kleine modellen lezen het profiel van de gebruiker anders soms als hun eigen identiteit.
+    'Je bent Maatje AI, een AI-assistent. Je praat mét de gebruiker, niet als de gebruiker: je bent niet de persoon uit zijn profiel en je spreekt niet namens hem, tenzij hij je vraagt iets voor hem te schrijven.',
+    `Vandaag is het ${today}.`,
+  ];
   if (process.env.SYSTEM_PROMPT) parts.push(process.env.SYSTEM_PROMPT);
   if (opts.space === 'private') parts.push('Dit is een privéchat. Je ziet hier alleen de privé-memory van de gebruiker; zijn zakelijke memory hoort niet bij deze chat.');
   const memory = opts.memory === false ? { text: '', files: [] } : buildMemoryContext(opts);

@@ -81,6 +81,7 @@ const state = {
   space: 'work',      // 'work' (zakelijk) of 'private' (privé): welke chats en welke memory
   vault: { setup: false, unlocked: false, lockMinutes: 15 }, // de kluis van Privé, voor deze browser
   proposals: [],      // voorstellen voor de privé-memory in de open chat
+  proposalWait: false, // de bijwerker kijkt nog of er iets voor de privé-memory is
   pendingChatId: null, // privéchat die open moet zodra Privé open is
   modelBySpace: { work: null, private: null },
 };
@@ -249,6 +250,7 @@ function showNewChat() {
   state.chat = null;
   state.messages = [];
   state.proposals = [];
+  state.proposalWait = false;
   state.model = state.model || defaultModel();
   if (isPrivate() && !isLocal(state.model)) state.model = privateModel();
   render();
@@ -262,6 +264,7 @@ async function openChat(id) {
     state.chat = r.chat;
     state.messages = r.messages;
     state.proposals = r.proposals || [];
+    state.proposalWait = Boolean(r.memoryPending);
     if (Boolean(r.chat.private) !== isPrivate()) setSpace(r.chat.private ? 'private' : 'work', { navigate: false });
     state.model = r.chat.model || state.model || defaultModel();
     if (r.chat.private && !isLocal(state.model)) state.model = privateModel();
@@ -458,7 +461,11 @@ function handleEvent(ev, reply, userMsg) {
       renderMessages();
       scrollToBottom();
       setTimeout(refreshMemoryBadge, 1500);
-      if (state.chat.private && reply.status === 'done') watchProposals(state.chat.id);
+      if (state.chat.private && reply.status === 'done') {
+        state.proposalWait = true;
+        renderProposalWait();
+        watchProposals(state.chat.id);
+      }
       break;
   }
 }
@@ -1204,6 +1211,7 @@ function renderMessages() {
   const lastIdx = state.messages.length - 1;
   state.messages.forEach((m, i) => box.append(messageNode(m, i === lastIdx)));
   for (const p of state.proposals) placeProposal(p);
+  renderProposalWait();
 
   const last = state.messages[lastIdx];
   if (last.role === 'user' && !state.streaming) {
@@ -1273,6 +1281,7 @@ function dropPrivate() {
     state.chat = null;
     state.messages = [];
     state.proposals = [];
+    state.proposalWait = false;
     history.replaceState(null, '', location.pathname + location.search);
   }
   clearTimeout(proposalPoll);
@@ -1541,7 +1550,10 @@ function watchProposals(chatId, tries = 0) {
         placeProposal(p);
         if (near) scrollToBottom(true);
       }
-      if (r.pending > 0 && tries < 200) watchProposals(chatId, tries + 1);
+      const again = r.pending > 0 && tries < 200;
+      state.proposalWait = again;
+      renderProposalWait();
+      if (again) watchProposals(chatId, tries + 1);
     } catch {}
   }, tries ? 3000 : 1500);
 }
@@ -1620,6 +1632,14 @@ function proposalCard(p) {
   return box;
 }
 
+// Een regeltje onderaan zolang de bijwerker nog kijkt of er iets te onthouden valt.
+function renderProposalWait() {
+  el.messages.querySelector(':scope > .proposal-wait')?.remove();
+  const last = state.messages[state.messages.length - 1];
+  if (!state.proposalWait || !state.chat?.private || privateLocked() || last?.status === 'streaming') return;
+  el.messages.append(node('div', 'proposal-wait', 'Kijkt of er iets is om in je privé-memory te zetten…'));
+}
+
 // Zet het voorstel onder het antwoord waar het bij hoort (of onderaan).
 function placeProposal(p) {
   if (el.messages.querySelector(`.proposal[data-id="${CSS.escape(p.id)}"]`)) return;
@@ -1627,6 +1647,8 @@ function placeProposal(p) {
   const anchor = el.messages.querySelector(`.msg[data-id="${CSS.escape(String(p.messageId))}"]`);
   if (anchor) anchor.after(card);
   else el.messages.append(card);
+  const wait = el.messages.querySelector(':scope > .proposal-wait');
+  if (wait) el.messages.append(wait);
 }
 
 // ---------- Memory ----------

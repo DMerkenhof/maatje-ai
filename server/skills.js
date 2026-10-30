@@ -347,8 +347,8 @@ export function skillsPrompt({ userTexts = [], withTool = false, autoInclude = f
   if (all.length) {
     parts.push(
       (withTool
-        ? 'Skills zijn vaste werkwijzen van de gebruiker. Past een skill bij de vraag, lees hem dan eerst helemaal met de tool skill_read en volg hem. Verwijst een skill naar een andere skill of naar een bestand, lees dat dan ook.'
-        : 'Skills zijn vaste werkwijzen van de gebruiker. Skills die bij dit bericht passen staan hieronder uitgeschreven; volg ze.') +
+        ? 'Skills zijn vaste werkwijzen van de gebruiker. Past een skill bij de vraag, lees hem dan eerst helemaal met de tool skill_read en volg hem. Verwijst een skill naar een andere skill of naar een bestand, lees dat dan ook. Schrijft een skill voor hoe je namens de gebruiker of zijn bedrijf schrijft, dan geldt dat voor teksten die je voor hem maakt, niet voor hoe je zelf met hem praat.'
+        : 'Skills zijn vaste werkwijzen van de gebruiker. Skills die bij dit bericht passen staan hieronder uitgeschreven; volg ze. Schrijft een skill voor hoe je namens de gebruiker of zijn bedrijf schrijft, dan geldt dat voor teksten die je voor hem maakt, niet voor hoe je zelf met hem praat.') +
         ' Noemt een skill tools of bestanden die je hier niet hebt (zoals Excel, PowerPoint of subagents), doe dan wat wel kan en lever de inhoud als tekst in de chat.\n' +
         all.map((s) => `- ${s.name}: ${clip(s.description || s.title, compact ? 220 : 500)}`).join('\n')
     );

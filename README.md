@@ -102,7 +102,7 @@ Heb je al een geheugen in een andere AI, exporteer dat dan naar losse markdown-b
 
 De eerste keer dat je op Privé klikt, kies je een code. Daarmee wordt alles in Privé versleuteld (AES-256-GCM, met een sleutel uit je code via scrypt): je privéchats in de database en je privé-memory, inclusief de bestandsnamen en de geschiedenis. Wie je server, je `data`-map of een backup heeft, kan er zonder code niks mee.
 
-- **Op slot.** Na 15 minuten niks doen in Privé, met de knop "Privé op slot", en bij elke herstart van de server. De sleutel staat dan nergens meer. Elke browser opent Privé apart: open je het op je telefoon, dan blijft het op je laptop op slot.
+- **Op slot.** Na 15 minuten niks doen in Privé, met de knop "Op slot zetten", en bij elke herstart van de server. De sleutel staat dan nergens meer. Elke browser opent Privé apart: open je het op je telefoon, dan blijft het op je laptop op slot.
 - **Alleen lokale modellen.** In Privé kies je alleen uit de modellen op je eigen computer (Ollama), en MCP staat uit. Zo gaat er niks van je privégesprekken naar buiten.
 - **Eerst vragen.** Na een privégesprek stelt de bijwerker voor wat er in je privé-memory kan. Jij vinkt aan wat mag en klikt op Opslaan. Zelf bewerken in het memory-paneel kan altijd.
 - **Code wijzigen** kan onderaan het memory-paneel van Privé.
