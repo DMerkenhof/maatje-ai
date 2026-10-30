@@ -11,7 +11,7 @@ Licht gehouden, zonder franje. Draait prima op een Raspberry Pi.
 - **Elk model.** Alle modellen van OpenRouter (Claude, GPT, Gemini, Qwen en honderden andere), met favorieten en per model de denkstand ("effort").
 - **Lokale modellen.** Ollama op je eigen computer, ook via Tailscale. Gratis, en je tekst blijft bij jou.
 - **Zakelijk en privé.** Twee gescheiden werelden, elk met eigen chats en een eigen memory. Een privéchat ziet je zakelijke memory niet, en andersom.
-- **Privé op slot.** Privé is versleuteld met een code die alleen jij kent. Er werken alleen lokale modellen, en de app vraagt eerst of iets in je privé-memory mag.
+- **Privé op slot.** Privé is versleuteld met een code die alleen jij kent. Er werken alleen lokale modellen, en iets onthouden gaat alleen als jij dat vraagt.
 - **Memory.** Profiel, voorkeuren, mensen en bedrijven, projecten en onderwerpen, als markdown-bestanden met git-geschiedenis. Na elk gesprek werkt een model naar keuze ze bij. Wachtwoorden, keys en rekeningnummers komen er nooit in. Alles is te bekijken en aan te passen in de app.
 - **Skills.** Vaste werkwijzen in hetzelfde formaat als die van Claude (een map met `SKILL.md`). Upload een `.zip`, `.skill` of `SKILL.md`, of schrijf er een in de app. Een model pakt een skill erbij als hij past, of je kiest er zelf een door je bericht met `/naam` te beginnen.
 - **MCP.** Koppel andere apps als tools, zoals Supabase, zoeken op internet (Exa) of elke andere MCP-server met een https-adres. Inloggen via je browser of met een sleutel. Lezen gaat vanzelf; wil een model iets wijzigen, dan vraagt de app eerst toestemming.
@@ -104,7 +104,7 @@ De eerste keer dat je op Privé klikt, kies je een code. Daarmee wordt alles in 
 
 - **Op slot.** Na 15 minuten niks doen in Privé, met de knop "Op slot zetten", en bij elke herstart van de server. De sleutel staat dan nergens meer. Elke browser opent Privé apart: open je het op je telefoon, dan blijft het op je laptop op slot.
 - **Alleen lokale modellen.** In Privé kies je alleen uit de modellen op je eigen computer (Ollama), en MCP staat uit. Zo gaat er niks van je privégesprekken naar buiten.
-- **Eerst vragen.** Na een privégesprek stelt de bijwerker voor wat er in je privé-memory kan. Jij vinkt aan wat mag en klikt op Opslaan. Zelf bewerken in het memory-paneel kan altijd.
+- **Alleen op verzoek.** In Privé onthoudt de app niks vanzelf. Klik onder een antwoord op **Onthouden**, dan kijkt de bijwerker naar het gesprek tot dat moment en stelt voor wat er in je privé-memory kan. Jij vinkt aan wat mag en klikt op Opslaan. Zelf bewerken in het memory-paneel kan altijd.
 - **Code wijzigen** kan onderaan het memory-paneel van Privé.
 - **Code vergeten?** Dan is Privé niet terug te halen, door niemand. Je kunt Privé wel wissen en opnieuw beginnen ("Code vergeten?" op het slotscherm). Zakelijk blijft dan gewoon staan.
 

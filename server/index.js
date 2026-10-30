@@ -44,8 +44,9 @@ const authInfo = auth.initAuth(store);
 
 // Na elk afgerond antwoord: in de wachtrij om de memory bij te werken.
 const memoryWorker = startMemoryWorker(store);
-onGenerationDone(({ messageId }) => {
-  if (!memoryEnabled(store)) return;
+onGenerationDone(({ messageId, private: isPrivate }) => {
+  // Privé: alleen op verzoek (de knop Onthouden onder een antwoord).
+  if (isPrivate || !memoryEnabled(store)) return;
   store.setMemoryStatus(messageId, 'pending');
   memoryWorker.kick();
 });
@@ -619,7 +620,17 @@ app.get('/api/chats/:id', (c) => {
   });
 });
 
-// Voorstellen voor de privé-memory in deze chat (de app kijkt hier even na een antwoord).
+// Onthouden op verzoek (Privé): de bijwerker kijkt naar het gesprek tot en met dit antwoord en doet een voorstel.
+app.post('/api/chats/:id/remember', async (c) => {
+  const id = c.req.param('id');
+  if (!store.isPrivateChat(id)) return c.json({ error: 'Alleen in Privé' }, 400);
+  const body = await c.req.json().catch(() => ({}));
+  if (!Number.isInteger(body.messageId) || !store.requestMemory(id, body.messageId)) return c.json({ error: 'Antwoord niet gevonden' }, 404);
+  memoryWorker.kick();
+  return c.json({ ok: true });
+});
+
+// Voorstellen voor de privé-memory in deze chat (de app kijkt hier even na een klik op Onthouden).
 app.get('/api/chats/:id/proposals', (c) => {
   const id = c.req.param('id');
   if (!store.isPrivateChat(id)) return c.json({ proposals: [], pending: 0 });

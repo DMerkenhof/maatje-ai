@@ -265,6 +265,7 @@ async function openChat(id) {
     state.messages = r.messages;
     state.proposals = r.proposals || [];
     state.proposalWait = Boolean(r.memoryPending);
+    state.rememberFor = null;
     if (Boolean(r.chat.private) !== isPrivate()) setSpace(r.chat.private ? 'private' : 'work', { navigate: false });
     state.model = r.chat.model || state.model || defaultModel();
     if (r.chat.private && !isLocal(state.model)) state.model = privateModel();
@@ -461,11 +462,6 @@ function handleEvent(ev, reply, userMsg) {
       renderMessages();
       scrollToBottom();
       setTimeout(refreshMemoryBadge, 1500);
-      if (state.chat.private && reply.status === 'done') {
-        state.proposalWait = true;
-        renderProposalWait();
-        watchProposals(state.chat.id);
-      }
       break;
   }
 }
@@ -1021,6 +1017,16 @@ function messageNode(m, isLast) {
       c.addEventListener('click', () => copy(m.content, c));
       meta.append(c);
     }
+    // Privé: alleen iets onthouden als jij daarom vraagt.
+    if (state.chat?.private && m.content && typeof m.id === 'number' && m.status !== 'error') {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'remember-btn';
+      b.textContent = 'Onthouden';
+      b.title = 'Kijken wat uit dit gesprek in je privé-memory kan. Je krijgt eerst een voorstel.';
+      b.addEventListener('click', () => remember(m.id, b));
+      meta.append(b);
+    }
     if (isLast) {
       const r = document.createElement('button');
       r.type = 'button';
@@ -1535,6 +1541,28 @@ function changeCodeForm() {
 let proposalPoll = null;
 
 // Na een antwoord in een privéchat: even kijken of de bijwerker iets voorstelt.
+// Klik op Onthouden: de bijwerker kijkt naar het gesprek tot en met dit antwoord.
+async function remember(messageId, btn) {
+  if (!state.chat) return;
+  if (btn) btn.disabled = true;
+  el.messages.querySelector(`.proposal-none[data-id="${messageId}"]`)?.remove();
+  try {
+    await api('POST', `/api/chats/${state.chat.id}/remember`, { messageId });
+    state.proposals = state.proposals.filter((p) => p.messageId !== messageId);
+    el.messages.querySelectorAll('.proposal').forEach((n) => {
+      if (!state.proposals.some((p) => p.id === n.dataset.id)) n.remove();
+    });
+    state.rememberFor = messageId;
+    state.proposalWait = true;
+    renderProposalWait();
+    watchProposals(state.chat.id);
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 function watchProposals(chatId, tries = 0) {
   clearTimeout(proposalPoll);
   proposalPoll = setTimeout(async () => {
@@ -1554,6 +1582,19 @@ function watchProposals(chatId, tries = 0) {
       state.proposalWait = again;
       renderProposalWait();
       if (again) watchProposals(chatId, tries + 1);
+      else if (state.rememberFor) {
+        // Klaar: niks gevonden? Dan zeggen we dat even.
+        const id = state.rememberFor;
+        state.rememberFor = null;
+        if (!r.proposals.some((p) => p.messageId === id)) {
+          const anchor = el.messages.querySelector(`.msg[data-id="${id}"]`);
+          const n = node('div', 'proposal-done proposal-none', 'Niks gevonden om te onthouden.');
+          n.dataset.id = id;
+          if (anchor) anchor.after(n);
+          else el.messages.append(n);
+          setTimeout(() => n.remove(), 8000);
+        }
+      }
     } catch {}
   }, tries ? 3000 : 1500);
 }
@@ -1637,7 +1678,10 @@ function renderProposalWait() {
   el.messages.querySelector(':scope > .proposal-wait')?.remove();
   const last = state.messages[state.messages.length - 1];
   if (!state.proposalWait || !state.chat?.private || privateLocked() || last?.status === 'streaming') return;
-  el.messages.append(node('div', 'proposal-wait', 'Kijkt of er iets is om in je privé-memory te zetten…'));
+  const line = node('div', 'proposal-wait', 'Kijkt wat hiervan in je privé-memory kan…');
+  const anchor = state.rememberFor && el.messages.querySelector(`.msg[data-id="${state.rememberFor}"]`);
+  if (anchor) anchor.after(line);
+  else el.messages.append(line);
 }
 
 // Zet het voorstel onder het antwoord waar het bij hoort (of onderaan).
@@ -1740,7 +1784,7 @@ function closeMemory() {
 function writerStatusText(w) {
   if (!w.enabled) return 'Bijwerken staat uit.';
   const parts = [];
-  if (memView.space === 'private') parts.push('In Privé vraagt hij eerst of het mag: je krijgt na een gesprek een voorstel in de chat.');
+  if (memView.space === 'private') parts.push('In Privé onthoudt hij alleen iets als jij onder een antwoord op Onthouden klikt. Je krijgt dan eerst een voorstel.');
   if (w.proposals) parts.push(`${w.proposals} ${w.proposals === 1 ? 'voorstel wacht' : 'voorstellen wachten'} op je, in de chat.`);
   if (w.running) parts.push('Bezig met bijwerken…');
   else if (w.waiting === 'model') parts.push('Er is nog geen model gekozen om de memory bij te werken. Kies er een met Wijzig.');
@@ -1822,7 +1866,8 @@ function renderMemoryList() {
   const status = document.createElement('div');
   status.className = 'mem-status' + (w.lastError ? ' err' : '');
   status.textContent = writerStatusText(w);
-  card.append(row1, row2, status);
+  // Het schuifje geldt alleen voor zakelijk; in Privé gaat het altijd op verzoek.
+  card.append(...(memView.space === 'private' ? [] : [row1]), row2, status);
   box.append(card);
 
   // Zoeken en nieuw

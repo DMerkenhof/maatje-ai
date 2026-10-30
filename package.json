@@ -1,6 +1,6 @@
 {
   "name": "maatje-ai",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "description": "Eigen AI-chat om zelf te hosten: elk model via OpenRouter of lokaal met Ollama, met eigen memory, skills en MCP",

@@ -99,8 +99,10 @@ class Store {
       nextMemoryJob: db.prepare(`
         SELECT m.id AS id, m.chat_id AS chat_id, m.content AS content, m.created_at AS created_at, c.private AS private
         FROM messages m JOIN chats c ON c.id = m.chat_id
-        WHERE m.memory_status = 'pending' AND (c.private = 0 OR ? = 1)
+        WHERE m.memory_status = 'pending' AND ((c.private = 0 AND ? = 1) OR (c.private = 1 AND ? = 1))
         ORDER BY m.id LIMIT 1`),
+      requestMemory: db.prepare(`UPDATE messages SET memory_status = 'pending', memory_attempts = 0 WHERE id = ? AND chat_id = ? AND role = 'assistant'`),
+      deleteProposalsFor: db.prepare(`DELETE FROM memory_proposals WHERE message_id = ?`),
       countMemoryPending: db.prepare(`
         SELECT COUNT(*) AS n FROM messages m JOIN chats c ON c.id = m.chat_id
         WHERE m.memory_status = 'pending' AND c.private = ?`),
@@ -316,11 +318,17 @@ class Store {
   }
 
   // Privé-klussen alleen als de kluis open is.
-  nextMemoryJob({ includePrivate = false } = {}) {
-    const j = this.q.nextMemoryJob.get(includePrivate ? 1 : 0);
+  nextMemoryJob({ includeWork = true, includePrivate = false } = {}) {
+    const j = this.q.nextMemoryJob.get(includeWork ? 1 : 0, includePrivate ? 1 : 0);
     if (!j) return null;
     const priv = Boolean(j.private);
     return { ...j, private: priv, content: this.openFor(j.chat_id, priv, j.content) };
+  }
+
+  // Op verzoek: dit antwoord (en het gesprek ervoor) laten nakijken. Een oud voorstel voor dit antwoord vervalt.
+  requestMemory(chatId, messageId) {
+    this.q.deleteProposalsFor.run(messageId);
+    return this.q.requestMemory.run(messageId, chatId).changes > 0;
   }
 
   countMemoryPending(space = 'work') {

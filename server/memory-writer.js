@@ -102,23 +102,25 @@ const clip = (s, n) => {
 
 const PREF_HINT = /\b(voortaan|altijd|nooit|liever|graag|niet meer|stop met|onthoud|vergeet|schrijf|gebruik)\b/i;
 
-function buildPrompt(store, job, m) {
-  const before = store.messagesBefore(job.chat_id, job.id, 5);
+// conversation: op verzoek (Privé). Dan kijkt hij naar het hele gesprek tot nu toe, niet alleen naar het laatste bericht.
+function buildPrompt(store, job, m, { conversation = false } = {}) {
+  const before = store.messagesBefore(job.chat_id, job.id, conversation ? 16 : 5);
   const userMsg = before.find((m) => m.role === 'user');
   if (!userMsg) return null;
   const earlier = before.filter((m) => m.id < userMsg.id).reverse().slice(-2);
+  const userText = conversation ? before.filter((x) => x.role === 'user').map((x) => x.content).join('\n') : userMsg.content;
 
   const files = m.listFiles();
   const listing = files
     .map((f) => `${f.path}${f.aliases.length ? ` [${f.aliases.slice(0, 8).join(', ')}]` : ''}`)
     .join('\n');
 
-  const relevantText = `${userMsg.content}\n${job.content}`;
+  const relevantText = `${userText}\n${job.content}`;
   const relevant = m.matchFiles(relevantText, { files, limit: 4 });
   const full = [];
   const profile = m.readFile('/profile.md');
   if (profile) full.push(`=== /profile.md ===\n${clip(profile, 4000)}`);
-  if (PREF_HINT.test(userMsg.content)) {
+  if (PREF_HINT.test(userText)) {
     const prefs = m.readFile('/preferences.md');
     if (prefs) full.push(`=== /preferences.md ===\n${clip(prefs, 12000)}`);
   }
@@ -131,6 +133,15 @@ function buildPrompt(store, job, m) {
     `FILE LISTING (path [aliases]):\n${listing || '(no files yet)'}`,
     `RELEVANT FILES (full content):\n${full.join('\n\n') || '(none)'}`,
   ];
+  if (conversation) {
+    parts.push(
+      `CONVERSATION (oldest first). The user asked you to remember what matters from this conversation: consider ALL user messages below, not only the latest one. Still only save what the USER said or clearly confirmed.\n` +
+        [...before].reverse().map((x) => `${x.role.toUpperCase()}: ${clip(x.content, x.role === 'user' ? 2000 : 800)}`).join('\n') +
+        `\nASSISTANT: ${clip(job.content, 1500)}`
+    );
+    parts.push('Return the JSON now.');
+    return parts.join('\n\n');
+  }
   if (earlier.length) {
     parts.push(
       `EARLIER IN THIS CHAT (context only, do not save from here):\n` +
@@ -291,7 +302,7 @@ async function processJob(store, job, model) {
   if (spaceName === 'private') {
     const release = vault.hold();
     try {
-      const prompt = buildPrompt(store, job, m);
+      const prompt = buildPrompt(store, job, m, { conversation: true });
       if (!prompt) return { changed: [], proposed: 0, space: spaceName };
       // Korter dan normaal: zolang dit loopt blijft de sleutel van Privé in het geheugen.
       const result = await completeJSON({ model, system: SYSTEM, user: prompt, schema: SCHEMA, timeoutMs: 5 * 60 * 1000 });
@@ -320,9 +331,13 @@ export function startMemoryWorker(store) {
     writerState.running = true;
     try {
       let skipPrivate = false; // privé wacht op je Mac, zakelijk kan misschien wel door
-      while (memoryEnabled(store)) {
+      // Zakelijk alleen als bijwerken aan staat; privé alleen op verzoek, dus altijd.
+      while (true) {
         // Privé alleen zolang er echt iemand in Privé bezig is, anders houdt de bijwerker de sleutel vast.
-        const job = store.nextMemoryJob({ includePrivate: vault.isOpen() && vault.activeSessions() > 0 && !skipPrivate });
+        const job = store.nextMemoryJob({
+          includeWork: memoryEnabled(store),
+          includePrivate: vault.isOpen() && vault.activeSessions() > 0 && !skipPrivate,
+        });
         if (!job) { if (!skipPrivate) writerState.waiting = null; break; }
         const chat = job.private ? store.getChat(job.chat_id) : null;
         const model = job.private ? privateModel(store, chat) : memoryModel(store);
