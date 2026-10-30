@@ -7,6 +7,7 @@ import { buildSystemPrompt, memoryReadTool, runMemoryRead } from './memory.js';
 import * as mcp from './mcp.js';
 import * as skills from './skills.js';
 import * as vault from './vault.js';
+import * as chars from './characters.js';
 
 const active = new Map(); // chatId -> { controller, listeners, messageId, stopped, content, thinking, status, approval, toolLog, private }
 let afterDone = () => {};
@@ -44,6 +45,7 @@ export function liveState(chatId) {
   if (!g) return null;
   return {
     messageId: g.messageId,
+    character: g.character,
     content: g.content,
     thinking: g.thinking && !g.content,
     status: g.status || null,
@@ -131,29 +133,29 @@ function askApproval(g, emit, info) {
   });
 }
 
-export function startGeneration(store, chatId, model, { useMemory = true, effort = null } = {}) {
-  const all = store.listMessages(chatId);
-  const history = all
-    // Mislukte antwoorden gaan niet mee als geschiedenis; gestopte wel.
-    .filter((m) => (m.role === 'user' || m.role === 'assistant') && m.status !== 'error' && m.content.trim().length > 0)
-    .map((m) => ({ role: m.role, content: m.content }));
-
-  // De laatste paar gebruikersberichten bepalen welke memory-bestanden er meteen bij komen.
-  const userTexts = all.filter((m) => m.role === 'user').map((m) => m.content);
-  const recentText = userTexts.slice(-3).join('\n');
+// Eén of meer karakters antwoorden om de beurt op het laatste bericht. Wie later komt, ziet wat de
+// anderen net zeiden en kan erop reageren. Elk karakter krijgt een eigen bericht in de chat.
+export function startGeneration(store, chatId, model, { useMemory = true, effort = null, characters = null } = {}) {
+  const turns = characters?.length ? characters : [chars.defaultCharacter()];
   // Privéchat: alleen de privé-memory. Gewone chat: alleen de zakelijke.
   const isPrivate = Boolean(store.getChat(chatId)?.private);
   // Privé: alleen lokale modellen (de routes controleren dit ook al).
   if (isPrivate && !isLocalModel(model)) throw new Error('In Privé werk je alleen met lokale modellen');
   const memSpace = isPrivate ? 'private' : 'work';
-  const messageId = store.addMessage(chatId, { role: 'assistant', model, status: 'streaming' });
   // Zolang dit antwoord loopt, blijft de sleutel van Privé er (tenzij je zelf op slot drukt).
   const release = isPrivate ? vault.hold() : () => {};
+
+  const newMessage = (c) => {
+    const id = store.addMessage(chatId, { role: 'assistant', model, status: 'streaming' });
+    store.setMeta(id, { character: chars.publicCharacter(c) });
+    return id;
+  };
 
   const g = {
     controller: new AbortController(),
     listeners: new Set(),
-    messageId,
+    messageId: newMessage(turns[0]),
+    character: chars.publicCharacter(turns[0]),
     stopped: false,
     content: '',
     thinking: false,
@@ -174,7 +176,8 @@ export function startGeneration(store, chatId, model, { useMemory = true, effort
     emit({ type: 'status', text });
   };
 
-  (async () => {
+  // Eén beurt van één karakter. Geeft 'done', 'stopped' of 'error' terug.
+  async function runTurn(character, messageId) {
     let content = '';
     let usage = null;
     let lastSave = Date.now();
@@ -182,8 +185,38 @@ export function startGeneration(store, chatId, model, { useMemory = true, effort
     let memoryFiles = [];
     let usedSkills = [];
     let finalStatus = 'error';
+    const pub = chars.publicCharacter(character);
 
     try {
+      // De geschiedenis opnieuw ophalen: daar staat nu ook in wat een ander karakter net zei.
+      const all = store.listMessages(chatId).filter((m) => m.id !== messageId);
+      const speakers = new Set();
+      const history = [];
+      for (const m of all) {
+        // Mislukte antwoorden gaan niet mee als geschiedenis; gestopte wel.
+        if ((m.role !== 'user' && m.role !== 'assistant') || m.status === 'error' || !m.content.trim()) continue;
+        let item;
+        if (m.role === 'user') item = { role: 'user', content: m.content };
+        else {
+          const who = m.meta?.character?.name || 'Maartje';
+          if (who === character.name) item = { role: 'assistant', content: m.content };
+          else {
+            // Wat een ander karakter zei, komt voor dit karakter binnen als bericht van buiten,
+            // zodat het gesprek altijd eindigt met iets waar hij op reageert.
+            speakers.add(who);
+            item = { role: 'user', content: `[${who}] ${m.content}` };
+          }
+        }
+        const prev = history[history.length - 1];
+        if (prev && prev.role === item.role) prev.content += `\n\n${item.content}`;
+        else history.push(item);
+      }
+      for (const c of turns) if (c.name !== character.name) speakers.add(c.name);
+
+      // De laatste paar gebruikersberichten bepalen welke memory-bestanden er meteen bij komen.
+      const userTexts = all.filter((m) => m.role === 'user').map((m) => m.content);
+      const recentText = userTexts.slice(-3).join('\n');
+
       const local = isLocalModel(model);
       // Weten of het model tools kan gebruiken (lijst is na een herstart nog leeg).
       if (!local) {
@@ -197,7 +230,10 @@ export function startGeneration(store, chatId, model, { useMemory = true, effort
 
       // Lokale modellen krijgen de passende memory-bestanden direct mee (scheelt rondes op je Mac).
       const withMemoryTool = useMemory && canTools && !local;
-      const system = buildSystemPrompt({ memory: useMemory, recentText, withTool: withMemoryTool, compact: local, space: memSpace });
+      const system = buildSystemPrompt({
+        memory: useMemory, recentText, withTool: withMemoryTool, compact: local, space: memSpace,
+        identity: chars.identityPrompt(character, [...speakers]),
+      });
       memoryFiles = [...system.files];
       // Skills: met tools leest het model ze zelf; lokaal en zonder tools gaat een passende skill direct mee.
       const sk = skills.skillsPrompt({ userTexts, withTool: canTools, autoInclude: !canTools || local, compact: local });
@@ -319,6 +355,7 @@ export function startGeneration(store, chatId, model, { useMemory = true, effort
         }
       }
 
+      content = chars.stripOwnName(content, character.name);
       if (!content.trim()) throw new Error('Het model gaf een leeg antwoord');
       store.finishMessage(messageId, { content, status: 'done', usage });
       finalStatus = 'done';
@@ -340,16 +377,42 @@ export function startGeneration(store, chatId, model, { useMemory = true, effort
     } finally {
       try {
         store.setMeta(messageId, {
+          character: pub,
           memoryFiles,
           ...(effort && effort !== 'default' ? { effort } : {}),
           ...(g.toolLog.length ? { tools: g.toolLog } : {}),
           ...(usedSkills.length ? { skills: usedSkills } : {}),
         });
       } catch {}
+    }
+    return finalStatus;
+  }
+
+  (async () => {
+    let messageId = g.messageId;
+    let lastDone = null;
+    try {
+      for (let i = 0; i < turns.length; i++) {
+        const status = await runTurn(turns[i], messageId);
+        if (status === 'done') lastDone = messageId;
+        const more = i + 1 < turns.length && status === 'done' && !g.stopped;
+        if (!more) break;
+        // Volgende karakter: nieuw bericht, en de browser hoort welk bericht klaar is.
+        let finished = null;
+        try { finished = store.getMessage(messageId); } catch {}
+        messageId = newMessage(turns[i + 1]);
+        Object.assign(g, {
+          messageId, character: chars.publicCharacter(turns[i + 1]),
+          content: '', thinking: false, status: null, approval: null, toolLog: [],
+        });
+        emit({ type: 'next', message: finished, assistantId: messageId, character: g.character });
+      }
+    } finally {
       store.touchChat(chatId);
       active.delete(chatId);
-      if (finalStatus === 'done') {
-        try { afterDone({ chatId, messageId, private: isPrivate }); } catch {}
+      // Memory één keer per beurt bijwerken, op het laatste afgeronde antwoord.
+      if (lastDone) {
+        try { afterDone({ chatId, messageId: lastDone, private: isPrivate }); } catch {}
       }
       let message = null;
       try { message = store.getMessage(messageId); } catch {}

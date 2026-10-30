@@ -51,6 +51,10 @@
           Memory
           <span class="badge" id="memoryBadge" hidden></span>
         </button>
+        <button class="side-link" id="charsBtn" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6M16 4.5a3.5 3.5 0 0 1 0 7M21 20c0-2.8-1.9-5.2-4.5-5.8"/></svg>
+          Karakters
+        </button>
         <button class="side-link" id="skillsBtn" type="button">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z"/></svg>
           Skills
@@ -132,6 +136,17 @@
     </div>
   </div>
   <input type="file" id="skillFile" accept=".zip,.skill,.md,.markdown,.txt" multiple hidden>
+
+  <div class="sheet" id="charSheet" hidden>
+    <div class="sheet-panel" role="dialog" aria-label="Karakters">
+      <div class="sheet-head">
+        <button class="text-btn" id="charBack" type="button" hidden>‹ Terug</button>
+        <div class="sheet-title" id="charTitle">Karakters</div>
+        <button class="text-btn" id="charClose" type="button">Sluiten</button>
+      </div>
+      <div class="sheet-body" id="charBody"></div>
+    </div>
+  </div>
 
   <div class="sheet" id="mcpSheet" hidden>
     <div class="sheet-panel" role="dialog" aria-label="MCP">

@@ -58,6 +58,12 @@ const el = {
   mcpClose: $('mcpClose'),
   mcpBody: $('mcpBody'),
   lockBtn: $('lockBtn'),
+  charsBtn: $('charsBtn'),
+  charSheet: $('charSheet'),
+  charBack: $('charBack'),
+  charTitle: $('charTitle'),
+  charClose: $('charClose'),
+  charBody: $('charBody'),
 };
 
 const state = {
@@ -84,6 +90,8 @@ const state = {
   proposalWait: false, // de bijwerker kijkt nog of er iets voor de privé-memory is
   pendingChatId: null, // privéchat die open moet zodra Privé open is
   modelBySpace: { work: null, private: null },
+  characters: [],     // Maartje en je eigen karakters
+  colors: {},
 };
 
 // ---------- Zakelijk of privé ----------
@@ -206,6 +214,7 @@ async function init() {
   refreshMemoryBadge();
   refreshMcp();
   loadSkills();
+  await loadCharacters();
   await route();
   window.addEventListener('hashchange', route);
 }
@@ -340,7 +349,8 @@ async function resumeStream(chatId) {
   await runStream(`/api/chats/${chatId}/stream`, null, reply, null);
 }
 
-async function runStream(url, body, reply, userMsg) {
+async function runStream(url, body, firstReply, userMsg) {
+  let reply = firstReply;
   const chatId = state.chat.id;
   const ctl = new AbortController();
   state.streamCtl = ctl;
@@ -384,7 +394,8 @@ async function runStream(url, body, reply, userMsg) {
         if (!line.trim()) continue;
         const ev = JSON.parse(line);
         if (!stillHere()) continue;
-        handleEvent(ev, reply, userMsg);
+        // Bij meerdere karakters komt er per karakter een nieuw antwoord bij.
+        reply = handleEvent(ev, reply, userMsg) || reply;
       }
     }
   } catch (err) {
@@ -416,9 +427,26 @@ function handleEvent(ev, reply, userMsg) {
     case 'start':
       if (ev.userMessage && userMsg) Object.assign(userMsg, ev.userMessage);
       reply.id = ev.assistantId;
+      if (ev.character) {
+        reply.meta = { ...(reply.meta || {}), character: ev.character };
+        const n = el.messages.querySelector('.msg[data-id="tmp-reply"]');
+        if (n) n.replaceWith(messageNode(reply, true));
+      }
       if (ev.chat) updateChatInList(ev.chat);
       break;
+    case 'next': {
+      // Het vorige karakter is klaar; het volgende begint.
+      if (ev.message) Object.assign(reply, ev.message);
+      if (reply.status === 'streaming') reply.status = 'done';
+      reply.thinking = false;
+      const next = { id: ev.assistantId, role: 'assistant', content: '', status: 'streaming', model: reply.model, meta: { character: ev.character } };
+      state.messages.push(next);
+      renderMessages();
+      scrollToBottom();
+      return next;
+    }
     case 'resume':
+      if (ev.character) reply.meta = { ...(reply.meta || {}), character: ev.character };
       reply.content = ev.content || '';
       reply.thinking = ev.thinking;
       reply.statusText = ev.status || null;
@@ -954,6 +982,7 @@ function messageNode(m, isLast) {
     return wrap;
   }
 
+  wrap.append(speakerNode(m.meta?.character));
   const body = document.createElement('div');
   body.className = 'body';
   wrap.append(body);
@@ -1203,6 +1232,12 @@ function renderMessages() {
     const p = document.createElement('div');
     p.textContent = state.model ? `Met ${shortModelName(state.model)}` : 'Kies rechtsboven eerst een model';
     e.append(s, p);
+    if (state.characters.length > 1) {
+      const hint = document.createElement('div');
+      hint.className = 'empty-note';
+      hint.textContent = `Met Maartje. Typ @ om ${state.characters.length > 2 ? 'een ander karakter' : state.characters[1].name} erbij te halen.`;
+      e.append(hint);
+    }
     if (isPrivate()) {
       const note = document.createElement('div');
       note.className = 'empty-note';
@@ -1694,6 +1729,186 @@ function placeProposal(p) {
   const wait = el.messages.querySelector(':scope > .proposal-wait');
   if (wait) el.messages.append(wait);
 }
+
+// ---------- Karakters ----------
+
+const COLOR_NAMES = { blauw: 'Blauw', paars: 'Paars', groen: 'Groen', oranje: 'Oranje', roze: 'Roze', grijs: 'Grijs' };
+
+async function loadCharacters() {
+  try {
+    const r = await api('GET', '/api/characters');
+    state.characters = r.characters;
+    state.colors = r.colors;
+  } catch {}
+}
+
+const charById = (id) => state.characters.find((c) => c.id === id);
+const colorHex = (c) => state.colors[c?.color] || '#0181fb';
+
+// Rondje met icoontje of beginletter, in de kleur van het karakter.
+function avatarNode(c, size = 22) {
+  const a = node('span', 'avatar', c?.emoji || (c?.name || 'M').charAt(0).toUpperCase());
+  a.style.background = colorHex(c);
+  a.style.width = a.style.height = `${size}px`;
+  a.style.fontSize = `${Math.round(size * (c?.emoji ? 0.6 : 0.5))}px`;
+  a.setAttribute('aria-hidden', 'true');
+  return a;
+}
+
+// Wie dit antwoord gaf. Oude antwoorden zonder karakter zijn van Maartje.
+function speakerNode(ch) {
+  const c = (ch && (charById(ch.id) || ch)) || charById('maartje') || { name: 'Maartje', color: 'blauw' };
+  const row = node('div', 'speaker');
+  row.append(avatarNode(c), node('span', 'speaker-name', c.name));
+  return row;
+}
+
+const charView = { mode: 'list', id: null };
+
+function openCharacters() {
+  closeNav();
+  el.charSheet.hidden = false;
+  renderCharList();
+  loadCharacters().then(() => { if (charView.mode === 'list') renderCharList(); });
+}
+
+function closeCharacters() {
+  el.charSheet.hidden = true;
+  charView.mode = 'list';
+}
+
+function renderCharList() {
+  charView.mode = 'list';
+  el.charTitle.textContent = 'Karakters';
+  el.charBack.hidden = true;
+  const box = el.charBody;
+  box.replaceChildren();
+  box.append(node('p', 'mcp-intro', 'Maartje antwoordt standaard. Haal een ander karakter erbij door @Naam in je bericht te zetten; noem je er meer, dan antwoorden ze om de beurt en reageren ze op elkaar. Zonder @ antwoordt wie het laatst sprak.'));
+  for (const c of state.characters) {
+    const b = node('button', 'char-item');
+    b.type = 'button';
+    const text = node('span', 'char-text');
+    text.append(node('span', 'name', c.name), node('span', 'sub', c.personality || 'Nog geen persoonlijkheid'));
+    b.append(avatarNode(c, 34), text);
+    b.addEventListener('click', () => renderCharForm(c));
+    box.append(b);
+  }
+  const add = node('button', 'btn-small mcp-add', '+ Nieuw karakter');
+  add.type = 'button';
+  add.addEventListener('click', () => renderCharForm(null));
+  box.append(add);
+}
+
+function renderCharForm(c) {
+  charView.mode = 'form';
+  charView.id = c?.id || null;
+  const isMaartje = c?.id === 'maartje';
+  el.charTitle.textContent = c ? c.name : 'Nieuw karakter';
+  el.charBack.hidden = false;
+  const box = el.charBody;
+  box.replaceChildren();
+  const form = node('form', 'mcp-form');
+
+  const name = textInput('Bijv. Kees');
+  name.value = c?.name || '';
+  name.maxLength = 20;
+  name.disabled = isMaartje;
+  const pers = document.createElement('textarea');
+  pers.className = 'char-pers';
+  pers.rows = 5;
+  pers.maxLength = 2000;
+  pers.placeholder = 'Bijv. Kritisch en eerlijk. Prikt door mooie praatjes heen en zegt het als iets niet klopt. Kort van stof.';
+  pers.value = c?.personality || '';
+
+  let color = c?.color || 'paars';
+  const swatches = node('div', 'swatches');
+  const paintSwatches = () => {
+    swatches.replaceChildren(...Object.keys(state.colors).map((k) => {
+      const sw = node('button', 'swatch' + (k === color ? ' on' : ''));
+      sw.type = 'button';
+      sw.style.background = state.colors[k];
+      sw.setAttribute('aria-label', COLOR_NAMES[k] || k);
+      sw.title = COLOR_NAMES[k] || k;
+      sw.addEventListener('click', () => { color = k; paintSwatches(); preview(); });
+      return sw;
+    }));
+  };
+  const emoji = textInput('Bijv. 🦊 (mag leeg)');
+  emoji.value = c?.emoji || '';
+  emoji.maxLength = 8;
+  const prev = node('div', 'char-preview');
+  const preview = () => prev.replaceChildren(speakerNode({ name: name.value.trim() || 'Naam', color, emoji: [...emoji.value.trim()][0] || '' }));
+  name.addEventListener('input', preview);
+  emoji.addEventListener('input', preview);
+  paintSwatches();
+  preview();
+
+  const msg = node('div', 'mem-status');
+  const actions = node('div', 'mcp-actions');
+  const save = node('button', 'btn-primary', 'Opslaan');
+  save.type = 'submit';
+  actions.append(save);
+  if (isMaartje) {
+    const reset = node('button', 'link-btn', 'Standaard terugzetten');
+    reset.type = 'button';
+    reset.addEventListener('click', async () => {
+      try {
+        await api('PUT', '/api/characters/maartje', { reset: true });
+        await loadCharacters();
+        renderCharForm(charById('maartje'));
+      } catch (err) { msg.textContent = err.message; }
+    });
+    actions.append(reset);
+  } else if (c) {
+    const del = node('button', 'btn-danger', 'Verwijderen');
+    del.type = 'button';
+    del.addEventListener('click', async () => {
+      if (!confirm(`${c.name} verwijderen? Oude antwoorden van ${c.name} blijven in je chats staan.`)) return;
+      try {
+        await api('DELETE', `/api/characters/${c.id}`);
+        await loadCharacters();
+        renderCharList();
+      } catch (err) { msg.textContent = err.message; }
+    });
+    actions.append(del);
+  }
+
+  form.append(
+    prev,
+    field('Naam', name, isMaartje ? 'Maartje blijft Maartje.' : 'Eén woord. Zo roep je hem of haar aan: @Naam.'),
+    field('Persoonlijkheid', pers, 'Hoe praat en denkt dit karakter? Schrijf het alsof je het aan een collega uitlegt.'),
+    (() => { const f = node('div', 'field'); f.append(node('span', 'field-label', 'Kleur'), swatches); return f; })(),
+    field('Icoontje', emoji, 'Eén emoji. Leeg = de eerste letter van de naam.'),
+    actions,
+    msg,
+  );
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    msg.textContent = '';
+    save.disabled = true;
+    try {
+      const payload = { name: name.value.trim(), personality: pers.value.trim(), color, emoji: emoji.value.trim() };
+      const r = c
+        ? await api('PUT', `/api/characters/${c.id}`, payload)
+        : await api('POST', '/api/characters', payload);
+      await loadCharacters();
+      renderCharList();
+      if (!state.streaming) renderMessages();
+      return r;
+    } catch (err) {
+      msg.textContent = err.message;
+    } finally {
+      save.disabled = false;
+    }
+  });
+  box.append(form);
+  if (!touch) (isMaartje ? pers : name).focus();
+}
+
+el.charsBtn.addEventListener('click', openCharacters);
+el.charClose.addEventListener('click', closeCharacters);
+el.charBack.addEventListener('click', renderCharList);
+el.charSheet.addEventListener('click', (e) => { if (e.target === el.charSheet) closeCharacters(); });
 
 // ---------- Memory ----------
 
@@ -2345,6 +2560,31 @@ el.skillFile.addEventListener('change', () => {
 const slash = { items: [], index: 0 };
 
 function updateSlashMenu() {
+  // @Naam: een karakter erbij halen
+  const before = el.input.value.slice(0, el.input.selectionStart ?? el.input.value.length);
+  const at = before.match(/(^|\s)@([\p{L}\p{N}_-]*)$/u);
+  if (at && state.characters.length) {
+    const q = at[2].toLowerCase();
+    slash.items = state.characters
+      .filter((c) => c.name.toLowerCase().startsWith(q))
+      .map((c) => ({ kind: 'char', c, start: before.length - at[2].length - 1 }));
+    if (!slash.items.length) return hideSlashMenu();
+    slash.index = Math.min(slash.index, slash.items.length - 1);
+    el.slashMenu.replaceChildren(
+      ...slash.items.map((it, i) => {
+        const b = node('button', 'slash-item char-option' + (i === slash.index ? ' active' : ''));
+        b.type = 'button';
+        b.setAttribute('role', 'option');
+        const t = node('span', 'char-text');
+        t.append(node('span', 'name', '@' + it.c.name), node('span', 'sub', it.c.personality || ''));
+        b.append(avatarNode(it.c, 24), t);
+        b.addEventListener('pointerdown', (e) => { e.preventDefault(); pickSlash(i); });
+        return b;
+      })
+    );
+    el.slashMenu.hidden = false;
+    return;
+  }
   const m = el.input.value.match(/^\/([a-z0-9:_-]*)$/i);
   const enabled = state.skills.filter((s) => s.enabled);
   if (!m || !enabled.length) return hideSlashMenu();
@@ -2388,6 +2628,18 @@ function hideSlashMenu() {
 function pickSlash(i) {
   const s = slash.items[i];
   if (!s) return;
+  if (s.kind === 'char') {
+    const v = el.input.value;
+    const end = el.input.selectionStart ?? v.length;
+    const insert = `@${s.c.name} `;
+    el.input.value = v.slice(0, s.start) + insert + v.slice(end).replace(/^\s+/, '');
+    const pos = s.start + insert.length;
+    hideSlashMenu();
+    autosize();
+    el.input.focus();
+    el.input.setSelectionRange(pos, pos);
+    return;
+  }
   el.input.value = `/${s.name} `;
   hideSlashMenu();
   autosize();
@@ -2797,6 +3049,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (!el.picker.hidden) closePicker();
   else if (!el.skillSheet.hidden) closeSkills();
+  else if (!el.charSheet.hidden) closeCharacters();
   else if (!el.mcpSheet.hidden) closeMcp();
   else if (!el.memorySheet.hidden) closeMemory();
 });

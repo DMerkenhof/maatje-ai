@@ -2,7 +2,7 @@
 
 Een eigen AI-chat die je zelf host. Je kiest per gesprek elk model via OpenRouter, of een lokaal model op je eigen computer met Ollama. Het geheugen is van jou: gewone tekstbestanden op je eigen server, niet bij een AI-bedrijf.
 
-Licht gehouden, zonder franje. Draait prima op een Raspberry Pi.
+De assistent heet Maartje. Licht gehouden, zonder franje. Draait prima op een Raspberry Pi.
 
 ![Maatje AI](docs/screenshot.png)
 
@@ -13,6 +13,7 @@ Licht gehouden, zonder franje. Draait prima op een Raspberry Pi.
 - **Zakelijk en privé.** Twee gescheiden werelden, elk met eigen chats en een eigen memory. Een privéchat ziet je zakelijke memory niet, en andersom.
 - **Privé op slot.** Privé is versleuteld met een code die alleen jij kent. Er werken alleen lokale modellen, en iets onthouden gaat alleen als jij dat vraagt.
 - **Memory.** Profiel, voorkeuren, mensen en bedrijven, projecten en onderwerpen, als markdown-bestanden met git-geschiedenis. Na elk gesprek werkt een model naar keuze ze bij. Wachtwoorden, keys en rekeningnummers komen er nooit in. Alles is te bekijken en aan te passen in de app.
+- **Karakters.** Naast Maartje maak je zelf karakters, elk met een naam, persoonlijkheid, kleur en icoontje. Haal ze erbij met `@Naam`; noem je er meer, dan antwoorden ze om de beurt en reageren ze op elkaar.
 - **Skills.** Vaste werkwijzen in hetzelfde formaat als die van Claude (een map met `SKILL.md`). Upload een `.zip`, `.skill` of `SKILL.md`, of schrijf er een in de app. Een model pakt een skill erbij als hij past, of je kiest er zelf een door je bericht met `/naam` te beginnen.
 - **MCP.** Koppel andere apps als tools, zoals Supabase, zoeken op internet (Exa) of elke andere MCP-server met een https-adres. Inloggen via je browser of met een sleutel. Lezen gaat vanzelf; wil een model iets wijzigen, dan vraagt de app eerst toestemming.
 - **Telefoon.** Werkt als app op je beginscherm. Antwoorden lopen door als je telefoon in slaap valt.

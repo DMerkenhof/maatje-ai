@@ -16,6 +16,7 @@ import * as mcp from './mcp.js';
 import * as skills from './skills.js';
 import * as auth from './auth.js';
 import * as vault from './vault.js';
+import * as chars from './characters.js';
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 process.chdir(appRoot);
@@ -36,6 +37,7 @@ try {
 
 const store = openDb(DATA_DIR);
 vault.initVault(store);
+chars.initCharacters(store);
 mem.ensureMemoryDirs(DATA_DIR);
 mcp.initMcp(store);
 if (!hasKey()) setApiKey(store.getSetting('openrouterKey', ''));
@@ -461,6 +463,41 @@ app.post('/api/proposals/:id', async (c) => {
   return c.json({ ok: true, changed });
 });
 
+// ---------- Karakters ----------
+
+const charView = (c) => ({ ...c, builtin: Boolean(c.builtin), defaultPersonality: c.id === 'maartje' ? chars.DEFAULT_PERSONALITY : undefined });
+
+app.get('/api/characters', (c) => c.json({ characters: chars.listCharacters().map(charView), colors: chars.COLORS }));
+
+app.post('/api/characters', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  try {
+    return c.json({ character: charView(chars.saveCharacter(null, body)) });
+  } catch (err) {
+    return c.json({ error: err.message }, 400);
+  }
+});
+
+app.put('/api/characters/:id', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  try {
+    const id = c.req.param('id');
+    const ch = body.reset && id === 'maartje' ? chars.resetMaartje() : chars.saveCharacter(id, body);
+    return c.json({ character: charView(ch) });
+  } catch (err) {
+    return c.json({ error: err.message }, 400);
+  }
+});
+
+app.delete('/api/characters/:id', (c) => {
+  try {
+    chars.deleteCharacter(c.req.param('id'));
+    return c.json({ ok: true });
+  } catch (err) {
+    return c.json({ error: err.message }, 400);
+  }
+});
+
 // ---------- Skills ----------
 
 app.get('/api/skills', (c) => c.json({ skills: skills.listSkills() }));
@@ -669,18 +706,21 @@ app.post('/api/chats/:id/messages', async (c) => {
 
   const effort = cleanEffort(body.effort);
   const isFirst = store.countMessages(chat.id) === 0;
+  // Wie antwoordt: wie je met @ noemt, anders wie het laatst sprak, anders Maartje.
+  const responders = chars.respondersFor(content, store.listMessages(chat.id));
   const userId = store.addMessage(chat.id, { role: 'user', content });
   if (isFirst) store.renameChat(chat.id, makeTitle(content));
   store.setChatModel(chat.id, model);
   store.setChatEffort(chat.id, effort);
   store.setSetting(chat.private ? 'lastPrivateModel' : 'lastModel', model);
 
-  const g = startGeneration(store, chat.id, model, { effort });
+  const g = startGeneration(store, chat.id, model, { effort, characters: responders });
   return streamResponse(chat.id, {
     type: 'start',
     chat: chatWithState(store.getChat(chat.id)),
     userMessage: store.getMessage(userId),
     assistantId: g.messageId,
+    character: g.character,
   });
 });
 
@@ -700,17 +740,22 @@ app.post('/api/chats/:id/regenerate', async (c) => {
   const last = msgs[msgs.length - 1];
   if (!last) return c.json({ error: 'Niks om opnieuw te doen' }, 400);
   if (last.role === 'assistant') store.deleteMessage(chat.id, last.id);
+  // Opnieuw door hetzelfde karakter (of, na een vraag zonder antwoord, wie daar genoemd werd).
+  const responders = last.role === 'assistant'
+    ? [chars.getCharacter(last.meta?.character?.id || 'maartje')]
+    : chars.respondersFor(last.content, msgs.slice(0, -1));
 
   const effort = typeof body.effort === 'string' ? cleanEffort(body.effort) : chat.effort;
   store.setChatModel(chat.id, model);
   store.setChatEffort(chat.id, effort);
   store.setSetting(chat.private ? 'lastPrivateModel' : 'lastModel', model);
-  const g = startGeneration(store, chat.id, model, { effort });
+  const g = startGeneration(store, chat.id, model, { effort, characters: responders });
   return streamResponse(chat.id, {
     type: 'start',
     chat: chatWithState(store.getChat(chat.id)),
     replacedId: last.role === 'assistant' ? last.id : null,
     assistantId: g.messageId,
+    character: g.character,
   });
 });
 

@@ -622,8 +622,8 @@ export function buildSystemPrompt(opts = {}) {
   }).format(new Date());
 
   const parts = [
-    // Kleine modellen lezen het profiel van de gebruiker anders soms als hun eigen identiteit.
-    'Je bent Maatje AI, een AI-assistent. Je praat mét de gebruiker, niet als de gebruiker: je bent niet de persoon uit zijn profiel en je spreekt niet namens hem, tenzij hij je vraagt iets voor hem te schrijven.',
+    // Wie de assistent is (Maartje of een ander karakter, zie characters.js).
+    opts.identity || 'Je bent Maartje, de assistent in Maatje AI. Je praat mét de persoon met wie je chat, nooit over hem.',
     `Vandaag is het ${today}.`,
   ];
   if (process.env.SYSTEM_PROMPT) parts.push(process.env.SYSTEM_PROMPT);
