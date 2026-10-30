@@ -6,9 +6,20 @@ import { streamChat, modelSupportsTools, localSupportsTools, isLocalModel, listM
 import { buildSystemPrompt, memoryReadTool, runMemoryRead } from './memory.js';
 import * as mcp from './mcp.js';
 import * as skills from './skills.js';
+import * as vault from './vault.js';
 
-const active = new Map(); // chatId -> { controller, listeners, messageId, stopped, content, thinking, status, approval, toolLog }
+const active = new Map(); // chatId -> { controller, listeners, messageId, stopped, content, thinking, status, approval, toolLog, private }
 let afterDone = () => {};
+
+// Gaat Privé op slot, dan stoppen lopende privé-antwoorden meteen.
+vault.onLock(() => {
+  for (const g of active.values()) {
+    if (!g.private) continue;
+    g.stopped = true;
+    g.lockedOut = true;
+    g.controller.abort();
+  }
+});
 
 // Wordt aangeroepen na elk afgerond antwoord (voor het bijwerken van memory).
 export function onGenerationDone(fn) {
@@ -130,7 +141,14 @@ export function startGeneration(store, chatId, model, { useMemory = true, effort
   // De laatste paar gebruikersberichten bepalen welke memory-bestanden er meteen bij komen.
   const userTexts = all.filter((m) => m.role === 'user').map((m) => m.content);
   const recentText = userTexts.slice(-3).join('\n');
+  // Privéchat: alleen de privé-memory. Gewone chat: alleen de zakelijke.
+  const isPrivate = Boolean(store.getChat(chatId)?.private);
+  // Privé: alleen lokale modellen (de routes controleren dit ook al).
+  if (isPrivate && !isLocalModel(model)) throw new Error('In Privé werk je alleen met lokale modellen');
+  const memSpace = isPrivate ? 'private' : 'work';
   const messageId = store.addMessage(chatId, { role: 'assistant', model, status: 'streaming' });
+  // Zolang dit antwoord loopt, blijft de sleutel van Privé er (tenzij je zelf op slot drukt).
+  const release = isPrivate ? vault.hold() : () => {};
 
   const g = {
     controller: new AbortController(),
@@ -142,6 +160,7 @@ export function startGeneration(store, chatId, model, { useMemory = true, effort
     status: null,
     approval: null,
     toolLog: [],
+    private: isPrivate,
   };
   active.set(chatId, g);
 
@@ -171,12 +190,14 @@ export function startGeneration(store, chatId, model, { useMemory = true, effort
         try { await listModels(); } catch {}
       }
       const canTools = local ? await localSupportsTools(model).catch(() => false) : modelSupportsTools(model);
-      if (canTools) await mcp.ready();
-      const conn = canTools ? mcp.toolsForModel({ compact: local }) : { tools: [], index: new Map(), servers: [] };
+      // In Privé geen MCP: zoeken op internet of Supabase zou je tekst naar buiten sturen.
+      const useMcp = canTools && !isPrivate;
+      if (useMcp) await mcp.ready();
+      const conn = useMcp ? mcp.toolsForModel({ compact: local }) : { tools: [], index: new Map(), servers: [] };
 
       // Lokale modellen krijgen de passende memory-bestanden direct mee (scheelt rondes op je Mac).
       const withMemoryTool = useMemory && canTools && !local;
-      const system = buildSystemPrompt({ memory: useMemory, recentText, withTool: withMemoryTool, compact: local });
+      const system = buildSystemPrompt({ memory: useMemory, recentText, withTool: withMemoryTool, compact: local, space: memSpace });
       memoryFiles = [...system.files];
       // Skills: met tools leest het model ze zelf; lokaal en zonder tools gaat een passende skill direct mee.
       const sk = skills.skillsPrompt({ userTexts, withTool: canTools, autoInclude: !canTools || local, compact: local });
@@ -238,7 +259,7 @@ export function startGeneration(store, chatId, model, { useMemory = true, effort
 
           if (c.name === 'memory_read') {
             setStatus('Geheugen lezen…');
-            const r = runMemoryRead(args);
+            const r = runMemoryRead(args, memSpace);
             result = r.text;
             for (const p of r.read) if (!memoryFiles.includes(p)) memoryFiles.push(p);
           } else if (c.name === 'skill_read') {
@@ -302,27 +323,39 @@ export function startGeneration(store, chatId, model, { useMemory = true, effort
       store.finishMessage(messageId, { content, status: 'done', usage });
       finalStatus = 'done';
     } catch (err) {
-      if (g.stopped) {
-        store.finishMessage(messageId, { content, status: 'stopped', usage });
+      try {
+        if (g.stopped) {
+          store.finishMessage(messageId, { content, status: 'stopped', usage });
+          finalStatus = 'stopped';
+        } else {
+          console.error(`[generate] ${model}: ${err.message || err}`);
+          store.finishMessage(messageId, { content, status: 'error', error: err.message || String(err), usage });
+        }
+      } catch (saveErr) {
+        // Privé ging op slot: zonder sleutel kan de tekst niet meer bewaard worden.
+        if (!saveErr.locked) throw saveErr;
+        store.setStatus(messageId, 'stopped');
         finalStatus = 'stopped';
-      } else {
-        console.error(`[generate] ${model}: ${err.message || err}`);
-        store.finishMessage(messageId, { content, status: 'error', error: err.message || String(err), usage });
       }
     } finally {
-      store.setMeta(messageId, {
-        memoryFiles,
-        ...(effort && effort !== 'default' ? { effort } : {}),
-        ...(g.toolLog.length ? { tools: g.toolLog } : {}),
-        ...(usedSkills.length ? { skills: usedSkills } : {}),
-      });
+      try {
+        store.setMeta(messageId, {
+          memoryFiles,
+          ...(effort && effort !== 'default' ? { effort } : {}),
+          ...(g.toolLog.length ? { tools: g.toolLog } : {}),
+          ...(usedSkills.length ? { skills: usedSkills } : {}),
+        });
+      } catch {}
       store.touchChat(chatId);
       active.delete(chatId);
       if (finalStatus === 'done') {
-        try { afterDone({ chatId, messageId }); } catch {}
+        try { afterDone({ chatId, messageId, private: isPrivate }); } catch {}
       }
-      emit({ type: 'done', message: store.getMessage(messageId) });
+      let message = null;
+      try { message = store.getMessage(messageId); } catch {}
+      emit({ type: 'done', message, ...(g.lockedOut ? { locked: true } : {}) });
       g.listeners.clear();
+      release();
     }
   })();
 

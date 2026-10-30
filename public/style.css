@@ -665,3 +665,132 @@ body { font-size: 14px; letter-spacing: -0.005em; }
 .login-msg { min-height: 18px; font-size: 13px; color: var(--danger); text-align: center; }
 
 .side-link[hidden] { display: none; }
+
+/* OpenRouter-key invullen in de modelkiezer */
+.key-form { margin: 4px 6px 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg); display: grid; gap: 10px; }
+.key-text { font-size: 13px; color: var(--muted); }
+.key-text a { color: var(--accent); }
+.key-row { display: flex; gap: 8px; }
+.key-row input {
+  flex: 1; min-width: 0; font: inherit; font-size: 16px; color: var(--text);
+  padding: 8px 14px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); outline: 0;
+}
+.key-row input:focus { border-color: var(--accent); }
+@media (pointer: fine) { .key-row input { font-size: 14px; } }
+.picker-key-link { display: block; margin: 10px 10px 6px; }
+
+/* ---------- Zakelijk / privé ---------- */
+
+.space-switch {
+  display: flex; gap: 2px; margin: 10px 12px 0; padding: 3px;
+  border-radius: 999px; background: rgba(255, 255, 255, .16);
+}
+.space-switch button {
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: 5px;
+  padding: 5px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 500;
+  color: rgba(255, 255, 255, .85);
+}
+.space-switch button svg { width: 13px; height: 13px; }
+.space-switch button:hover { color: #fff; }
+.space-switch button.active { background: #fff; color: #13151a; }
+.sidebar-top { padding-top: 10px; }
+
+/* In privé is de zijbalk donker, zodat je altijd ziet waar je zit. */
+.app.private .sidebar { background: linear-gradient(165deg, #34405e 0%, #232c47 50%, #161c31 100%); }
+.app.private .space-switch button.active { color: #232c47; }
+
+.space-chip {
+  display: inline-flex; align-items: center; gap: 4px; flex: none;
+  font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
+  background: #232c47; color: #fff;
+}
+.space-chip[hidden] { display: none; }
+.space-chip svg { width: 12px; height: 12px; }
+.empty-note { font-size: 13px; color: var(--muted); max-width: 340px; margin-top: 4px; }
+
+/* Dezelfde schakelaar in het memory-paneel */
+.space-switch.in-sheet { margin: 0 0 12px; background: var(--hover); align-self: flex-start; min-width: 240px; }
+.space-switch.in-sheet button { color: var(--muted); }
+.space-switch.in-sheet button:hover { color: var(--text); }
+.space-switch.in-sheet button.active { background: var(--surface); color: var(--text); border: 1px solid var(--line); }
+@media (prefers-color-scheme: dark) {
+  .space-chip { background: #3a4670; }
+}
+
+/* ---------- Privé: slot en voorstellen ---------- */
+
+.app.locked .composer,
+.app.locked .model-btn,
+.app.locked .effort-sel,
+.app.locked .btn-new { display: none; }
+
+.messages > .vault-panel { max-width: 400px; }
+.vault-panel {
+  margin-top: 6vh;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 20px;
+  padding: 26px 24px 22px;
+  display: grid; gap: 12px;
+}
+.sheet-body .vault-panel { margin-top: 4px; max-width: 420px; }
+.vault-icon {
+  width: 44px; height: 44px; border-radius: 50%;
+  background: #232c47; color: #fff; display: grid; place-items: center;
+}
+.vault-icon svg, .proposal .approval-head svg {
+  width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+.vault-panel h2 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
+.vault-panel p { margin: 0; color: var(--muted); font-size: 13.5px; }
+.vault-panel input, .vault-change input {
+  font: inherit; font-size: 16px; color: var(--text); width: 100%; box-sizing: border-box;
+  padding: 10px 16px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--bg); outline: 0;
+}
+.vault-panel input[type="checkbox"] { width: auto; padding: 0; margin: 2px 0 0; accent-color: #232c47; }
+.vault-panel input:focus, .vault-change input:focus { border-color: var(--accent); }
+.vault-row { display: flex; gap: 8px; }
+.vault-row input { flex: 1; min-width: 0; }
+.vault-actions { display: flex; align-items: center; gap: 14px; }
+.vault-hint { font-size: 12px; color: var(--muted); margin-top: -4px; }
+.vault-warn { font-size: 13px; padding: 10px 12px; border-radius: 12px; background: #fff4e0; color: #7a4800; }
+.vault-check { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; cursor: pointer; }
+.vault-msg { min-height: 18px; font-size: 13px; color: var(--danger); }
+.vault-msg:empty { min-height: 0; margin-top: -6px; }
+.vault-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 12px; font-size: 12px; color: var(--faint); }
+.vault-foot .link-btn { font-size: 12px; }
+.btn-danger-fill { background: var(--danger); color: #fff; border-radius: 999px; padding: 9px 20px; font-weight: 600; }
+.btn-danger-fill:disabled { opacity: .5; cursor: default; }
+.vault-card { margin-top: 14px; }
+.vault-change { display: grid; gap: 8px; width: 100%; max-width: 360px; }
+.vault-change .btn-primary { justify-self: start; }
+@media (pointer: fine) { .vault-panel input, .vault-change input { font-size: 14px; } }
+
+.messages > .proposal { margin-top: -8px; margin-bottom: 22px; }
+.proposal {
+  border: 1px solid #3a4670; border-radius: 16px; padding: 14px 16px;
+  background: var(--hover); display: grid; gap: 10px;
+}
+.proposal .approval-head { display: flex; align-items: center; gap: 8px; }
+.proposal .approval-head svg { width: 16px; height: 16px; flex: none; color: #3a4670; }
+.proposal-items { display: grid; gap: 6px; }
+.proposal-item {
+  display: flex; gap: 10px; align-items: flex-start; cursor: pointer;
+  padding: 9px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+}
+.proposal-item input { margin-top: 3px; accent-color: #232c47; flex: none; }
+.proposal-text { min-width: 0; display: grid; gap: 2px; }
+.proposal-file { font-weight: 600; font-size: 13px; }
+.proposal-desc { font-size: 12px; color: var(--muted); }
+.proposal-line { font-size: 13.5px; overflow-wrap: anywhere; }
+.proposal-line.add::before { content: "+ "; color: #1f8a4c; font-weight: 600; }
+.proposal-line.del { color: var(--muted); text-decoration: line-through; }
+.proposal-line.del::before { content: "− "; text-decoration: none; display: inline-block; }
+.messages > .proposal-done { margin-top: -10px; margin-bottom: 22px; font-size: 12.5px; color: var(--muted); }
+
+@media (prefers-color-scheme: dark) {
+  .vault-warn { background: #3a2a10; color: #f3c27a; }
+  .vault-icon { background: #3a4670; }
+  .proposal { border-color: #4a5888; }
+  .proposal .approval-head svg { color: #9fb0e6; }
+  .proposal-line.add::before { color: #7fd6a4; }
+}

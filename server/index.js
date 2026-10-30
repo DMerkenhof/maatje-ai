@@ -9,12 +9,13 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 
 import { openDb } from './db.js';
 import * as mem from './memory.js';
-import { listModels, listLocalModels, hasKey, isLocalModel } from './openrouter.js';
+import { listModels, listLocalModels, hasKey, isLocalModel, setApiKey, keySource, NO_KEY_MESSAGE } from './openrouter.js';
 import { startGeneration, stopGeneration, subscribe, isGenerating, liveState, onGenerationDone, answerApproval } from './generate.js';
-import { startMemoryWorker, writerState, memoryModel, memoryEnabled } from './memory-writer.js';
+import { startMemoryWorker, writerState, memoryModel, memoryEnabled, applyProposal } from './memory-writer.js';
 import * as mcp from './mcp.js';
 import * as skills from './skills.js';
 import * as auth from './auth.js';
+import * as vault from './vault.js';
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 process.chdir(appRoot);
@@ -34,8 +35,10 @@ try {
 }
 
 const store = openDb(DATA_DIR);
+vault.initVault(store);
 mem.ensureMemoryDirs(DATA_DIR);
 mcp.initMcp(store);
+if (!hasKey()) setApiKey(store.getSetting('openrouterKey', ''));
 skills.initSkills(DATA_DIR, store);
 const authInfo = auth.initAuth(store);
 
@@ -49,21 +52,42 @@ onGenerationDone(({ messageId }) => {
 
 const app = new Hono();
 
+// Privé op slot: netjes melden in plaats van een fout.
+app.onError((err, c) => {
+  if (err.locked) return lockedResponse(c);
+  console.error(`[server] ${c.req.method} ${c.req.path}: ${err.message || err}`);
+  return c.json({ error: err.message || 'Er ging iets mis' }, 500);
+});
+
 // ---------- Inloggen ----------
 
 // Zonder geldige sessie geen toegang tot de API (de pagina zelf bevat geen gegevens).
 // Uitzonderingen: health, inloggen, en de terugkeer na inloggen bij een MCP-server
 // (die is beveiligd met een eenmalige code, en komt soms binnen in een ander browservenster).
 const OPEN = new Set(['/api/health', '/api/auth', '/api/login', '/api/logout', '/api/mcp/callback']);
+
+// Alles wat iets verandert moet uit de app zelf komen: JSON of een eigen header. Een andere
+// website (ook op een andere poort van dezelfde computer) kan dat niet zonder dat de browser
+// eerst toestemming vraagt, en die geven we niet.
+app.use('/api/*', async (c, next) => {
+  const m = c.req.method;
+  if (m === 'GET' || m === 'HEAD' || m === 'OPTIONS') return next();
+  const type = (c.req.header('content-type') || '').toLowerCase();
+  if (type.startsWith('application/json') || c.req.header('x-maatje') === '1') return next();
+  return c.json({ error: 'Verzoek geweigerd' }, 403);
+});
 app.use('/api/*', async (c, next) => {
   if (!auth.authEnabled() || OPEN.has(c.req.path)) return next();
   if (auth.validSession(getCookie(c, auth.COOKIE))) return next();
   return c.json({ error: 'Niet ingelogd', auth: true }, 401);
 });
 
+// Het adres van de browser. Achter Tailscale Serve (of een andere proxy) zet de proxy het laatste
+// adres in X-Forwarded-For; eerdere adressen kan de browser zelf verzinnen.
 function clientIp(c) {
   const fwd = c.req.header('x-forwarded-for');
-  return (fwd && fwd.split(',')[0].trim()) || c.env?.incoming?.socket?.remoteAddress || 'onbekend';
+  const last = fwd ? fwd.split(',').map((x) => x.trim()).filter(Boolean).pop() : '';
+  return last || c.env?.incoming?.socket?.remoteAddress || 'onbekend';
 }
 
 app.get('/api/auth', (c) =>
@@ -90,6 +114,126 @@ app.post('/api/logout', (c) => {
   return c.json({ ok: true });
 });
 
+// ---------- Privé: de kluis ----------
+
+const vaultToken = (c) => getCookie(c, vault.COOKIE);
+
+function lockedResponse(c, extra = {}) {
+  const setup = vault.isSetup();
+  return c.json({ error: setup ? 'Privé is op slot' : 'Stel eerst een code in voor Privé', locked: true, setup, ...extra }, 423);
+}
+
+// Mag deze browser nu in Privé? Telt als activiteit, behalve bij vanzelf verversen op de achtergrond.
+const privateOk = (c) => vault.sessionOk(vaultToken(c), { touch: c.req.header('x-maatje-background') !== '1' });
+
+function isHttps(c) {
+  return c.req.header('x-forwarded-proto') === 'https' || new URL(c.req.url).protocol === 'https:';
+}
+
+function setVaultCookie(c, token) {
+  // Geen vaste looptijd: de server bepaalt wanneer Privé weer op slot gaat.
+  setCookie(c, vault.COOKIE, token, { path: '/', httpOnly: true, sameSite: 'Strict', secure: isHttps(c) });
+}
+
+// Alleen JSON, zodat een andere website niet stiekem codes kan proberen vanuit je browser.
+async function jsonBody(c) {
+  if (!(c.req.header('content-type') || '').toLowerCase().startsWith('application/json')) return null;
+  return c.req.json().catch(() => null);
+}
+
+// Na openen: wat nog onversleuteld van versie 13 over is, alsnog versleutelen.
+async function afterOpen() {
+  const release = vault.hold();
+  try {
+    const r = await mem.migrateLegacyPrivate();
+    const chats = store.sealLegacyPrivate();
+    if (r.imported || chats) console.log(`[privé] versleuteld: ${r.imported} memory-bestanden, ${chats} chatonderdelen`);
+  } catch (err) {
+    console.warn(`[privé] overzetten lukte niet helemaal: ${err.message || err}`);
+  } finally {
+    release();
+  }
+  memoryWorker.kick();
+}
+
+app.get('/api/vault', (c) => c.json(vault.status(vaultToken(c))));
+
+app.post('/api/vault/setup', async (c) => {
+  const body = await jsonBody(c);
+  if (!body || typeof body.code !== 'string') return c.json({ error: 'Geen code ontvangen' }, 400);
+  if (vault.isSetup()) return c.json({ error: 'Er is al een code voor Privé' }, 409);
+  try {
+    const token = await vault.setup(body.code);
+    setVaultCookie(c, token);
+  } catch (err) {
+    return c.json({ error: err.message }, 400);
+  }
+  await afterOpen();
+  return c.json({ ...vault.status(null), unlocked: true });
+});
+
+app.post('/api/vault/unlock', async (c) => {
+  const body = await jsonBody(c);
+  if (!body || typeof body.code !== 'string') return c.json({ error: 'Geen code ontvangen' }, 400);
+  if (!vault.isSetup()) return lockedResponse(c);
+  const r = await vault.unlock(clientIp(c), body.code);
+  if (!r.ok) {
+    return r.wait
+      ? c.json({ error: `Te vaak een verkeerde code. Probeer het over ${r.wait} ${r.wait === 1 ? 'minuut' : 'minuten'} opnieuw.` }, 429)
+      : c.json({ error: 'Die code klopt niet' }, 401);
+  }
+  setVaultCookie(c, r.token);
+  await afterOpen();
+  return c.json({ ...vault.status(null), unlocked: true });
+});
+
+app.post('/api/vault/lock', (c) => {
+  vault.lock();
+  deleteCookie(c, vault.COOKIE, { path: '/' });
+  return c.json(vault.status(null));
+});
+
+// Deze browser ging zelf op slot (na niks doen): alleen zijn eigen sessie weg.
+app.post('/api/vault/leave', (c) => {
+  vault.leave(vaultToken(c));
+  deleteCookie(c, vault.COOKIE, { path: '/' });
+  return c.json(vault.status(null));
+});
+
+// Teken van leven uit de browser zolang je in Privé bezig bent.
+app.post('/api/vault/ping', (c) => {
+  privateOk(c);
+  return c.json(vault.status(vaultToken(c)));
+});
+
+app.post('/api/vault/code', async (c) => {
+  if (!privateOk(c)) return lockedResponse(c);
+  const body = await jsonBody(c);
+  if (!body || typeof body.old !== 'string' || typeof body.code !== 'string') return c.json({ error: 'Vul je huidige en je nieuwe code in' }, 400);
+  try {
+    await vault.changeCode(clientIp(c), body.old, body.code);
+  } catch (err) {
+    return c.json({ error: err.message }, 400);
+  }
+  return c.json({ ok: true });
+});
+
+// Code vergeten: Privé helemaal wissen en opnieuw beginnen.
+const FORGET_WORD = 'WISSEN';
+app.post('/api/vault/forget', async (c) => {
+  const body = await jsonBody(c);
+  if (!body || String(body.confirm || '').trim().toUpperCase() !== FORGET_WORD) {
+    return c.json({ error: `Typ ${FORGET_WORD} om Privé te wissen` }, 400);
+  }
+  vault.lock();
+  store.deleteAllPrivate();
+  mem.space('private').destroy();
+  vault.forget();
+  deleteCookie(c, vault.COOKIE, { path: '/' });
+  console.log('[privé] gewist op verzoek (code vergeten)');
+  return c.json(vault.status(null));
+});
+
 // ---------- Hulpjes ----------
 
 const vendor = {
@@ -102,6 +246,8 @@ function makeTitle(text) {
   const line = (text.replace(/^\s*\/[a-z0-9][a-z0-9:_-]*\s*/i, '') || text).replace(/\s+/g, ' ').trim();
   return line.length > 60 ? line.slice(0, 57).trimEnd() + '…' : line || 'Nieuwe chat';
 }
+
+const PRIVATE_LOCAL_ONLY = 'In Privé werk je alleen met lokale modellen, zodat je gesprekken thuis blijven. Kies een model onder Lokaal.';
 
 const EFFORTS = ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'on'];
 function cleanEffort(e) {
@@ -164,8 +310,10 @@ app.get('/api/settings', (c) =>
   c.json({
     favorites: store.getSetting('favorites', []),
     lastModel: store.getSetting('lastModel', null),
+    lastPrivateModel: store.getSetting('lastPrivateModel', null),
     defaultModel: DEFAULT_MODEL || null,
     hasKey: hasKey(),
+    keySource: keySource(),
     memoryModel: memoryModel(store),
     memoryEnabled: memoryEnabled(store),
   })
@@ -181,6 +329,12 @@ app.put('/api/settings', async (c) => {
     store.setSetting('memoryModel', body.memoryModel.trim());
     memoryWorker.kick();
   }
+  if (typeof body.openrouterKey === 'string' && keySource() !== 'env') {
+    const key = body.openrouterKey.trim();
+    if (key && !/^sk-or-[\w-]{10,}$/.test(key)) return c.json({ error: 'Dat lijkt geen OpenRouter-key (die begint met sk-or-)' }, 400);
+    store.setSetting('openrouterKey', key);
+    setApiKey(key);
+  }
   if (typeof body.memoryEnabled === 'boolean') {
     store.setSetting('memoryEnabled', body.memoryEnabled);
     if (body.memoryEnabled) memoryWorker.kick();
@@ -189,27 +343,48 @@ app.put('/api/settings', async (c) => {
 });
 
 // ---------- Memory ----------
+// Twee ruimtes: ?space=work (zakelijk, standaard) of ?space=private (privé).
 
-app.get('/api/memory', (c) =>
-  c.json({
-    files: mem.listFiles(),
+const spaceParam = (v) => mem.spaceOf(v);
+
+// Privé-memory alleen met een open kluis in deze browser.
+app.use('/api/memory/*', async (c, next) => {
+  const withBody = ['POST', 'PUT', 'PATCH'].includes(c.req.method);
+  const sp = withBody ? (await c.req.json().catch(() => ({}))).space : c.req.query('space');
+  const touchesPrivate = c.req.path === '/api/memory/move' || spaceParam(sp) === 'private';
+  if (touchesPrivate && !privateOk(c)) return lockedResponse(c);
+  return next();
+});
+
+app.get('/api/memory', (c) => {
+  const sp = spaceParam(c.req.query('space'));
+  if (sp === 'private' && !privateOk(c)) return lockedResponse(c);
+  const w = writerState;
+  // Alleen wat bij deze ruimte hoort: zakelijk ziet niet wanneer of wat er in privé gebeurde.
+  const run = w.runs[sp] || {};
+  return c.json({
+    space: sp,
+    files: mem.space(sp).listFiles(),
     writer: {
       model: memoryModel(store),
       enabled: memoryEnabled(store),
-      pending: store.countMemoryPending(),
-      running: writerState.running,
-      waiting: writerState.waiting,
-      lastRun: writerState.lastRun,
-      lastChanged: writerState.lastChanged,
-      lastError: writerState.lastError,
+      pending: store.countMemoryPending(sp),
+      proposals: sp === 'private' ? store.countProposals() : 0,
+      running: w.running && w.runningSpace === sp,
+      waiting: w.waiting,
+      lastRun: run.at || null,
+      lastChanged: run.changed || [],
+      lastProposed: run.proposed || 0,
+      lastSpace: sp,
+      lastError: run.error || null,
     },
-  })
-);
+  });
+});
 
 app.get('/api/memory/file', (c) => {
   const p = c.req.query('path');
   if (!mem.validPath(p)) return c.json({ error: 'Ongeldig pad' }, 400);
-  const content = mem.readFile(p);
+  const content = mem.space(spaceParam(c.req.query('space'))).readFile(p);
   if (content === null) return c.json({ error: 'Bestand bestaat niet' }, 404);
   return c.json({ path: p, content });
 });
@@ -220,25 +395,69 @@ app.put('/api/memory/file', async (c) => {
     return c.json({ error: 'Ongeldig pad. Gebruik bijv. /people/naam.md, /areas/project.md of /topics/onderwerp.md (kleine letters, cijfers en streepjes).' }, 400);
   }
   if (typeof body.content !== 'string') return c.json({ error: 'Geen inhoud' }, 400);
-  const isNew = mem.readFile(body.path) === null;
-  mem.writeFile(body.path, body.content);
-  await mem.commit(`memory (jij): ${isNew ? 'nieuw' : 'aangepast'} ${body.path}`);
+  const m = mem.space(spaceParam(body.space));
+  const isNew = m.readFile(body.path) === null;
+  m.writeFile(body.path, body.content);
+  await m.commit(`memory (jij): ${isNew ? 'nieuw' : 'aangepast'} ${body.path}`);
   return c.json({ ok: true });
 });
 
 app.delete('/api/memory/file', async (c) => {
   const p = c.req.query('path');
   if (!mem.validPath(p)) return c.json({ error: 'Ongeldig pad' }, 400);
-  mem.deleteFile(p);
-  await mem.commit(`memory (jij): verwijderd ${p}`);
+  const m = mem.space(spaceParam(c.req.query('space')));
+  m.deleteFile(p);
+  await m.commit(`memory (jij): verwijderd ${p}`);
   return c.json({ ok: true });
 });
 
-app.get('/api/memory/history', async (c) => c.json({ history: await mem.history(20) }));
+// Een bestand van zakelijk naar privé verplaatsen, of andersom.
+app.post('/api/memory/move', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  if (!mem.validPath(body.path)) return c.json({ error: 'Ongeldig pad' }, 400);
+  const fromName = spaceParam(body.from);
+  const toName = fromName === 'private' ? 'work' : 'private';
+  const from = mem.space(fromName);
+  const to = mem.space(toName);
+  const content = from.readFile(body.path);
+  if (content === null) return c.json({ error: 'Bestand bestaat niet' }, 404);
+  if (to.readFile(body.path) !== null) {
+    return c.json({ error: `Er staat al een bestand ${body.path} in ${toName === 'private' ? 'privé' : 'zakelijk'}. Voeg ze eerst zelf samen.` }, 409);
+  }
+  to.writeFile(body.path, content);
+  from.deleteFile(body.path);
+  await to.commit(`memory (jij): verplaatst hierheen ${body.path}`);
+  await from.commit(`memory (jij): verplaatst naar ${toName === 'private' ? 'privé' : 'zakelijk'} ${body.path}`);
+  // Naar privé: ook de oude versies uit de zakelijke geschiedenis halen, anders zijn ze daar nog te lezen.
+  // Lukt dat nu niet, dan blijft het (versleuteld) op de lijst en probeert de app het later opnieuw.
+  let purged = true;
+  if (toName === 'private') {
+    to.addPendingPurge([body.path]);
+    purged = await mem.runPendingPurges();
+  }
+  return c.json({ ok: true, space: toName, purged });
+});
+
+app.get('/api/memory/history', async (c) => c.json({ history: await mem.space(spaceParam(c.req.query('space'))).history(20) }));
 
 app.post('/api/memory/run', (c) => {
   memoryWorker.kick();
   return c.json({ ok: true });
+});
+
+// Een voorstel voor de privé-memory goedkeuren (helemaal of deels) of afwijzen.
+app.post('/api/proposals/:id', async (c) => {
+  if (!privateOk(c)) return lockedResponse(c);
+  const p = store.getProposal(c.req.param('id'));
+  if (!p) return c.json({ error: 'Dit voorstel is al afgehandeld' }, 404);
+  const body = await c.req.json().catch(() => ({}));
+  const accept = new Set((Array.isArray(body.accept) ? body.accept : []).filter((i) => Number.isInteger(i)));
+  const chosen = p.items.filter((_, i) => accept.has(i));
+  let changed = [];
+  if (chosen.length) changed = (await applyProposal(chosen)).changed;
+  store.deleteProposal(p.id);
+  store.setMemoryStatus(p.messageId, changed.length ? 'done' : 'none');
+  return c.json({ ok: true, changed });
 });
 
 // ---------- Skills ----------
@@ -366,18 +585,45 @@ h1{font-size:20px;margin:0 0 8px}p{color:#5b616e;margin:0 0 20px}a{display:inlin
 <script>try{window.opener&&window.opener.postMessage({type:'mcp-auth',ok:${ok}},location.origin)}catch(e){}${ok ? 'setTimeout(function(){try{window.close()}catch(e){}},1200)' : ''}</script></body></html>`);
 });
 
-app.get('/api/chats', (c) => c.json({ chats: store.listChats().map(chatWithState) }));
+// Privéchats alleen in een browser waar Privé open is. Het opvragen van de lijst telt niet als activiteit.
+app.get('/api/chats', (c) =>
+  c.json({ chats: store.listChats({ includePrivate: vault.sessionOk(vaultToken(c), { touch: false }) }).map(chatWithState) })
+);
 
 app.post('/api/chats', async (c) => {
   const body = await c.req.json().catch(() => ({}));
-  const chat = store.createChat({ model: typeof body.model === 'string' ? body.model : null });
+  const isPrivate = body.private === true;
+  if (isPrivate && !privateOk(c)) return lockedResponse(c);
+  const model = typeof body.model === 'string' ? body.model : null;
+  const chat = store.createChat({ model: isPrivate && !isLocalModel(model) ? null : model, private: isPrivate });
   return c.json({ chat: chatWithState(chat) });
+});
+
+// Voor alles onder /api/chats/:id: privéchat alleen met open kluis.
+app.use('/api/chats/:id/*', async (c, next) => {
+  if (store.isPrivateChat(c.req.param('id')) && !privateOk(c)) return lockedResponse(c, { private: true });
+  return next();
+});
+app.use('/api/chats/:id', async (c, next) => {
+  if (store.isPrivateChat(c.req.param('id')) && !privateOk(c)) return lockedResponse(c, { private: true });
+  return next();
 });
 
 app.get('/api/chats/:id', (c) => {
   const chat = store.getChat(c.req.param('id'));
   if (!chat) return c.json({ error: 'Chat niet gevonden' }, 404);
-  return c.json({ chat: chatWithState(chat), messages: store.listMessages(chat.id) });
+  return c.json({
+    chat: chatWithState(chat),
+    messages: store.listMessages(chat.id),
+    ...(chat.private ? { proposals: store.listProposals(chat.id), memoryPending: store.chatMemoryPending(chat.id) } : {}),
+  });
+});
+
+// Voorstellen voor de privé-memory in deze chat (de app kijkt hier even na een antwoord).
+app.get('/api/chats/:id/proposals', (c) => {
+  const id = c.req.param('id');
+  if (!store.isPrivateChat(id)) return c.json({ proposals: [], pending: 0 });
+  return c.json({ proposals: store.listProposals(id), pending: store.chatMemoryPending(id) });
 });
 
 app.patch('/api/chats/:id', async (c) => {
@@ -385,7 +631,7 @@ app.patch('/api/chats/:id', async (c) => {
   if (!chat) return c.json({ error: 'Chat niet gevonden' }, 404);
   const body = await c.req.json().catch(() => ({}));
   if (typeof body.title === 'string' && body.title.trim()) store.renameChat(chat.id, body.title.trim().slice(0, 120));
-  if (typeof body.model === 'string' && body.model) store.setChatModel(chat.id, body.model);
+  if (typeof body.model === 'string' && body.model && (!chat.private || isLocalModel(body.model))) store.setChatModel(chat.id, body.model);
   if (typeof body.effort === 'string') store.setChatEffort(chat.id, cleanEffort(body.effort));
   return c.json({ chat: chatWithState(store.getChat(chat.id)) });
 });
@@ -407,7 +653,8 @@ app.post('/api/chats/:id/messages', async (c) => {
   const model = typeof body.model === 'string' ? body.model.trim() : '';
   if (!content) return c.json({ error: 'Leeg bericht' }, 400);
   if (!model) return c.json({ error: 'Kies eerst een model' }, 400);
-  if (!hasKey() && !isLocalModel(model)) return c.json({ error: 'Er staat nog geen OpenRouter-key in .env' }, 400);
+  if (chat.private && !isLocalModel(model)) return c.json({ error: PRIVATE_LOCAL_ONLY }, 400);
+  if (!hasKey() && !isLocalModel(model)) return c.json({ error: NO_KEY_MESSAGE }, 400);
 
   const effort = cleanEffort(body.effort);
   const isFirst = store.countMessages(chat.id) === 0;
@@ -415,7 +662,7 @@ app.post('/api/chats/:id/messages', async (c) => {
   if (isFirst) store.renameChat(chat.id, makeTitle(content));
   store.setChatModel(chat.id, model);
   store.setChatEffort(chat.id, effort);
-  store.setSetting('lastModel', model);
+  store.setSetting(chat.private ? 'lastPrivateModel' : 'lastModel', model);
 
   const g = startGeneration(store, chat.id, model, { effort });
   return streamResponse(chat.id, {
@@ -435,7 +682,8 @@ app.post('/api/chats/:id/regenerate', async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const model = (typeof body.model === 'string' && body.model.trim()) || chat.model;
   if (!model) return c.json({ error: 'Kies eerst een model' }, 400);
-  if (!hasKey() && !isLocalModel(model)) return c.json({ error: 'Er staat nog geen OpenRouter-key in .env' }, 400);
+  if (chat.private && !isLocalModel(model)) return c.json({ error: PRIVATE_LOCAL_ONLY }, 400);
+  if (!hasKey() && !isLocalModel(model)) return c.json({ error: NO_KEY_MESSAGE }, 400);
 
   const msgs = store.listMessages(chat.id);
   const last = msgs[msgs.length - 1];
@@ -445,7 +693,7 @@ app.post('/api/chats/:id/regenerate', async (c) => {
   const effort = typeof body.effort === 'string' ? cleanEffort(body.effort) : chat.effort;
   store.setChatModel(chat.id, model);
   store.setChatEffort(chat.id, effort);
-  store.setSetting('lastModel', model);
+  store.setSetting(chat.private ? 'lastPrivateModel' : 'lastModel', model);
   const g = startGeneration(store, chat.id, model, { effort });
   return streamResponse(chat.id, {
     type: 'start',
@@ -505,5 +753,5 @@ serve({ fetch: app.fetch, port: PORT, hostname: HOST }, (info) => {
   if (!authInfo.enabled) console.log('Inloggen staat uit (AUTH=off). Zorg dat de app niet vanaf internet bereikbaar is.');
   else if (authInfo.generated) console.log(`Wachtwoord voor Maatje AI: ${authInfo.generated}   (kies je eigen met APP_PASSWORD in .env)`);
   else console.log('Inloggen met het wachtwoord uit APP_PASSWORD.');
-  if (!hasKey()) console.warn('Let op: OPENROUTER_API_KEY is leeg');
+  if (!hasKey()) console.log('Nog geen OpenRouter-key: vul hem in bij de modelkiezer in de app, of zet OPENROUTER_API_KEY in .env.');
 });

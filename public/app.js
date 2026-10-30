@@ -35,6 +35,8 @@ const el = {
   memTitle: $('memTitle'),
   memClose: $('memClose'),
   memBody: $('memBody'),
+  spaceSwitch: $('spaceSwitch'),
+  spaceChip: $('spaceChip'),
   skillsBtn: $('skillsBtn'),
   skillSheet: $('skillSheet'),
   skillBack: $('skillBack'),
@@ -55,6 +57,7 @@ const el = {
   mcpTitle: $('mcpTitle'),
   mcpClose: $('mcpClose'),
   mcpBody: $('mcpBody'),
+  lockBtn: $('lockBtn'),
 };
 
 const state = {
@@ -75,21 +78,79 @@ const state = {
   memory: null,       // laatst opgehaalde memory-overzicht
   mcp: null,          // laatst opgehaalde MCP-servers
   skills: [],         // skills, ook voor de /-suggesties
+  space: 'work',      // 'work' (zakelijk) of 'private' (privé): welke chats en welke memory
+  vault: { setup: false, unlocked: false, lockMinutes: 15 }, // de kluis van Privé, voor deze browser
+  proposals: [],      // voorstellen voor de privé-memory in de open chat
+  pendingChatId: null, // privéchat die open moet zodra Privé open is
+  modelBySpace: { work: null, private: null },
 };
+
+// ---------- Zakelijk of privé ----------
+
+try { if (localStorage.getItem('maatje-space') === 'private') state.space = 'private'; } catch {}
+
+const isPrivate = () => state.space === 'private';
+
+function applySpace() {
+  el.app.classList.toggle('private', isPrivate());
+  for (const b of el.spaceSwitch.querySelectorAll('button')) {
+    const on = b.dataset.space === state.space;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+  }
+}
+
+function setSpace(space, { navigate = true } = {}) {
+  if (space !== 'work' && space !== 'private') return;
+  const changed = space !== state.space;
+  if (changed) state.modelBySpace[state.space] = state.model;
+  state.space = space;
+  try { localStorage.setItem('maatje-space', space); } catch {}
+  applySpace();
+  if (!changed) return;
+  // Elke ruimte zijn eigen model; in Privé altijd een lokaal model.
+  state.model = state.modelBySpace[space] || defaultModel();
+  if (space === 'private' && !isLocal(state.model)) state.model = privateModel();
+  if (space === 'private') pingVault(true);
+  // Een open chat uit de andere ruimte hoort hier niet: naar een nieuwe chat.
+  if (navigate && state.chat && Boolean(state.chat.private) !== isPrivate()) {
+    if (location.hash) location.hash = '';
+    else showNewChat();
+  } else {
+    render();
+  }
+  refreshMemoryBadge();
+}
+
+el.spaceSwitch.addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-space]');
+  if (b) setSpace(b.dataset.space);
+});
+applySpace();
 
 const touch = window.matchMedia('(pointer: coarse)').matches;
 
 // ---------- API ----------
 
-async function api(method, url, body) {
+// background: vanzelf verversen, telt niet als activiteit in Privé.
+async function api(method, url, body, { background = false } = {}) {
+  const headers = { 'X-Maatje': '1' };
+  if (body) headers['Content-Type'] = 'application/json';
+  if (background) headers['X-Maatje-Background'] = '1';
   const res = await fetch(url, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
   const json = await res.json().catch(() => ({}));
   if (res.status === 401 && json.auth) showLogin();
-  if (!res.ok) throw new Error(json.error || `Fout ${res.status}`);
+  if (res.status === 423 && json.locked) vaultLocked(json);
+  if (!res.ok) {
+    const err = new Error(json.error || `Fout ${res.status}`);
+    err.status = res.status;
+    if (json.locked) err.locked = true;
+    throw err;
+  }
   return json;
 }
 
@@ -120,7 +181,7 @@ el.loginForm.addEventListener('submit', async (e) => {
 });
 
 el.logoutBtn.addEventListener('click', async () => {
-  try { await fetch('/api/logout', { method: 'POST' }); } catch {}
+  try { await fetch('/api/logout', { method: 'POST', headers: { 'X-Maatje': '1' } }); } catch {}
   location.reload();
 });
 
@@ -133,10 +194,13 @@ async function init() {
     showLogin();
     return;
   }
-  const [settings, chats] = await Promise.all([api('GET', '/api/settings'), api('GET', '/api/chats')]);
+  const [settings, chats, vst] = await Promise.all([api('GET', '/api/settings'), api('GET', '/api/chats'), api('GET', '/api/vault')]);
   state.settings = settings;
   state.favorites = settings.favorites || [];
   state.chats = chats.chats;
+  state.vault = { ...state.vault, ...vst };
+  if (vst.unlocked) lastActivity = Date.now() - Math.max(0, vst.lockMinutes * 60000 - vst.remainingMs);
+  if (isPrivate()) state.model = privateModel();
   loadModels();
   refreshMemoryBadge();
   refreshMcp();
@@ -154,6 +218,7 @@ async function loadModels(force = false) {
   } catch (err) {
     state.modelsError = err.message;
   }
+  if (isPrivate() && !isLocal(state.model)) state.model = privateModel();
   renderModelButton();
   if (!state.streaming) renderMessages();
   if (!el.picker.hidden) renderModelList();
@@ -167,14 +232,25 @@ async function route() {
 }
 
 function defaultModel() {
+  if (isPrivate()) return privateModel();
   return state.settings.lastModel || state.settings.defaultModel || state.favorites[0] || null;
+}
+
+// In Privé: het laatst gebruikte lokale model, of anders het eerste lokale model.
+function privateModel() {
+  const last = state.settings.lastPrivateModel;
+  if (isLocal(last)) return last;
+  if (isLocal(state.modelBySpace.private)) return state.modelBySpace.private;
+  return state.local.models?.[0]?.id || null;
 }
 
 function showNewChat() {
   detachStream();
   state.chat = null;
   state.messages = [];
+  state.proposals = [];
   state.model = state.model || defaultModel();
+  if (isPrivate() && !isLocal(state.model)) state.model = privateModel();
   render();
   if (!touch) el.input.focus();
 }
@@ -185,12 +261,23 @@ async function openChat(id) {
     const r = await api('GET', `/api/chats/${id}`);
     state.chat = r.chat;
     state.messages = r.messages;
+    state.proposals = r.proposals || [];
+    if (Boolean(r.chat.private) !== isPrivate()) setSpace(r.chat.private ? 'private' : 'work', { navigate: false });
     state.model = r.chat.model || state.model || defaultModel();
+    if (r.chat.private && !isLocal(state.model)) state.model = privateModel();
     state.effort = r.chat.effort || 'default';
     render();
     scrollToBottom(true);
     if (r.chat.generating) resumeStream(id);
-  } catch {
+    else if (r.memoryPending) watchProposals(id);
+  } catch (err) {
+    if (err.locked) {
+      // Privéchat terwijl Privé op slot is: eerst de code, dan deze chat.
+      state.pendingChatId = id;
+      history.replaceState(null, '', location.pathname + location.search);
+      render();
+      return;
+    }
     location.hash = '';
   }
 }
@@ -200,7 +287,8 @@ async function openChat(id) {
 async function send() {
   const text = el.input.value.trim();
   if (!text || state.streaming) return;
-  if (!state.model) {
+  if (privateLocked()) return;
+  if (!state.model || (isPrivate() && !isLocal(state.model))) {
     state.pendingSend = text;
     openPicker();
     return;
@@ -208,7 +296,7 @@ async function send() {
 
   if (!state.chat) {
     try {
-      const r = await api('POST', '/api/chats', { model: state.model });
+      const r = await api('POST', '/api/chats', { model: state.model, private: isPrivate() });
       state.chat = r.chat;
       state.chats.unshift(r.chat);
       history.replaceState(null, '', `#/c/${r.chat.id}`);
@@ -232,7 +320,7 @@ async function send() {
 
 async function regenerate() {
   if (state.streaming || !state.chat) return;
-  if (!state.model) { openPicker(); return; }
+  if (!state.model || (state.chat.private && !isLocal(state.model))) { openPicker(); return; }
   const last = state.messages[state.messages.length - 1];
   if (last && last.role === 'assistant') state.messages.pop();
   const reply = { id: 'tmp-reply', role: 'assistant', content: '', status: 'streaming', model: state.model };
@@ -370,6 +458,7 @@ function handleEvent(ev, reply, userMsg) {
       renderMessages();
       scrollToBottom();
       setTimeout(refreshMemoryBadge, 1500);
+      if (state.chat.private && reply.status === 'done') watchProposals(state.chat.id);
       break;
   }
 }
@@ -442,6 +531,7 @@ function openPicker(mode = 'chat') {
 
 function closePicker() {
   el.picker.hidden = true;
+  state.editKey = false;
   state.pendingSend = null;
   state.pickerMode = 'chat';
 }
@@ -563,9 +653,16 @@ function renderModelList() {
   };
 
   let shown = 0;
+  // In Privé alleen lokale modellen: zo blijven je privégesprekken thuis.
+  const localOnly = state.pickerMode === 'chat' && isPrivate();
+  const localName = state.local.name || 'Mac';
+  if (localOnly && !words.length) {
+    note(`In Privé kies je alleen uit lokale modellen op je ${localName}. Zo blijven je privégesprekken thuis.`);
+  }
 
   // Favorieten
   const favs = state.favorites
+    .filter((id) => !localOnly || isLocal(id))
     .map((id) => modelInfo(id) || { id, name: isLocal(id) ? shortModelName(id) : id })
     .filter(match);
   if (favs.length) {
@@ -575,7 +672,6 @@ function renderModelList() {
   }
 
   // Lokaal op je eigen computer
-  const localName = state.local.name || 'Mac';
   if (state.local.status === 'ok') {
     const locals = state.local.models.filter((m) => !state.favorites.includes(m.id) && match(m));
     if (locals.length) {
@@ -586,6 +682,19 @@ function renderModelList() {
   } else if (state.local.status === 'offline' && !words.length) {
     section(`Lokaal op je ${localName}`);
     note(`Je ${localName} is nu niet bereikbaar. Zet hem aan en open Ollama, dan verschijnen de lokale modellen hier.`);
+  } else if (localOnly && !words.length) {
+    section('Lokaal');
+    note('Er is nog geen computer met lokale modellen gekoppeld (LOCAL_BASE_URL in .env). Zonder lokaal model kun je in Privé nog niet chatten.');
+  }
+  if (localOnly) {
+    if (!shown && words.length) note('Niks gevonden.');
+    return;
+  }
+
+  // OpenRouter: nog geen key? Dan hier invullen.
+  if (state.pickerMode === 'chat' && (!state.settings.hasKey || state.editKey) && !words.length) {
+    section('OpenRouter-key');
+    list.append(keyForm());
   }
 
   // OpenRouter
@@ -607,11 +716,57 @@ function renderModelList() {
   section(words.length ? `OpenRouter, gevonden (${rest.length})` : `OpenRouter (${rest.length})`);
   list.append(...rest.slice(0, 150).map(modelRow));
   if (rest.length > 150) note(`Nog ${rest.length - 150} modellen. Zoek om te filteren, bijvoorbeeld op "qwen".`);
+  if (state.settings.keySource === 'app' && !state.editKey && !words.length) {
+    const b = node('button', 'link-btn picker-key-link', 'OpenRouter-key wijzigen');
+    b.type = 'button';
+    b.addEventListener('click', () => { state.editKey = true; renderModelList(); el.modelList.scrollTop = 0; });
+    list.append(b);
+  }
+}
+
+function keyForm() {
+  const box = node('form', 'key-form');
+  const text = node('div', 'key-text');
+  text.append('Plak je OpenRouter-key om de modellen van OpenRouter te gebruiken. Een key maak je aan op ');
+  const a = node('a', '', 'openrouter.ai/keys');
+  a.href = 'https://openrouter.ai/keys';
+  a.target = '_blank';
+  a.rel = 'noopener';
+  text.append(a, '.');
+  const row = node('div', 'key-row');
+  const input = document.createElement('input');
+  input.type = 'password';
+  input.placeholder = 'sk-or-…';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  const save = node('button', 'btn-primary', 'Opslaan');
+  save.type = 'submit';
+  row.append(input, save);
+  const msg = node('div', 'mem-status');
+  box.append(text, row, msg);
+  box.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    msg.classList.remove('err');
+    msg.textContent = 'Opslaan…';
+    try {
+      await api('PUT', '/api/settings', { openrouterKey: input.value.trim() });
+      state.settings = await api('GET', '/api/settings');
+      state.editKey = false;
+      await loadModels(true);
+    } catch (err) {
+      msg.classList.add('err');
+      msg.textContent = err.message;
+    }
+  });
+  return box;
 }
 
 // ---------- Weergave ----------
 
 function render() {
+  el.app.classList.toggle('locked', privateLocked());
+  el.lockBtn.hidden = !(isPrivate() && state.vault.unlocked);
   renderChatList();
   renderTitle();
   renderModelButton();
@@ -620,9 +775,11 @@ function render() {
 }
 
 function renderTitle() {
-  el.title.textContent = state.chat ? state.chat.title : 'Nieuwe chat';
-  el.title.disabled = !state.chat;
-  document.title = state.chat ? `${state.chat.title} · Maatje AI` : 'Maatje AI';
+  el.spaceChip.hidden = !isPrivate();
+  el.title.textContent = privateLocked() ? 'Privé' : state.chat ? state.chat.title : isPrivate() ? 'Nieuwe privéchat' : 'Nieuwe chat';
+  el.title.disabled = !state.chat || privateLocked();
+  // Titels van privéchats niet in de tabtitel (zichtbaar in de geschiedenis en tabbladen).
+  document.title = state.chat && !state.chat.private ? `${state.chat.title} · Maatje AI` : 'Maatje AI';
 }
 
 const EFFORT_LABELS = {
@@ -685,15 +842,23 @@ function groupLabel(ts) {
 function renderChatList() {
   const list = el.chatList;
   list.replaceChildren();
-  if (!state.chats.length) {
+  if (privateLocked()) {
     const e = document.createElement('div');
     e.className = 'chat-empty';
-    e.textContent = 'Nog geen chats.';
+    e.textContent = state.vault.setup ? 'Privé is op slot.' : 'Stel eerst een code in voor Privé.';
+    list.append(e);
+    return;
+  }
+  const chats = state.chats.filter((c) => Boolean(c.private) === isPrivate());
+  if (!chats.length) {
+    const e = document.createElement('div');
+    e.className = 'chat-empty';
+    e.textContent = isPrivate() ? 'Nog geen privéchats. Ze gebruiken alleen je privé-memory.' : 'Nog geen chats.';
     list.append(e);
     return;
   }
   let lastGroup = null;
-  for (const c of state.chats) {
+  for (const c of chats) {
     const g = groupLabel(c.updated_at);
     if (g !== lastGroup) {
       const h = document.createElement('div');
@@ -1009,6 +1174,10 @@ function toolLogNode(tools) {
 
 function renderMessages() {
   const box = el.messages;
+  if (privateLocked()) {
+    renderVaultPanel(box);
+    return;
+  }
   box.replaceChildren();
 
   if (!state.messages.length) {
@@ -1016,11 +1185,17 @@ function renderMessages() {
     e.className = 'empty';
     const s = document.createElement('strong');
     const em = document.createElement('em');
-    em.textContent = 'chat';
+    em.textContent = isPrivate() ? 'privéchat' : 'chat';
     s.append('Nieuwe ', em);
     const p = document.createElement('div');
     p.textContent = state.model ? `Met ${shortModelName(state.model)}` : 'Kies rechtsboven eerst een model';
     e.append(s, p);
+    if (isPrivate()) {
+      const note = document.createElement('div');
+      note.className = 'empty-note';
+      note.textContent = 'Alleen je privé-memory en lokale modellen. Alles in Privé staat versleuteld met je code.';
+      e.append(note);
+    }
     box.append(e);
     return;
   }
@@ -1028,6 +1203,7 @@ function renderMessages() {
   // Na een gebruikersbericht zonder antwoord (fout bij versturen) toch "Opnieuw" tonen.
   const lastIdx = state.messages.length - 1;
   state.messages.forEach((m, i) => box.append(messageNode(m, i === lastIdx)));
+  for (const p of state.proposals) placeProposal(p);
 
   const last = state.messages[lastIdx];
   if (last.role === 'user' && !state.streaming) {
@@ -1078,6 +1254,381 @@ function autosize() {
 function closeNav() { el.app.classList.remove('nav-open'); }
 
 
+// ---------- Privé: de kluis ----------
+// Privé is versleuteld met je code. Op slot na een kwartier niks doen in Privé, met de knop, of na een herstart.
+
+const privateLocked = () => isPrivate() && !state.vault.unlocked;
+const vaultView = { forget: false };
+let lastActivity = Date.now();
+let lastPing = 0;
+
+const LOCK_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
+
+// Privé-gegevens uit de browser halen (bij op slot gaan).
+function dropPrivate() {
+  state.chats = state.chats.filter((c) => !c.private);
+  if (state.chat?.private) {
+    detachStream();
+    state.pendingChatId = state.chat.id;
+    state.chat = null;
+    state.messages = [];
+    state.proposals = [];
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+  clearTimeout(proposalPoll);
+  if (!el.memorySheet.hidden && memView.space === 'private') {
+    memView.dirty = false;
+    state.memory = null;
+    renderMemoryList();
+  }
+}
+
+// De server zegt: op slot.
+function vaultLocked(info = {}) {
+  if (typeof info.setup === 'boolean') state.vault.setup = info.setup;
+  const was = state.vault.unlocked;
+  state.vault.unlocked = false;
+  if (was) dropPrivate();
+  if (info.private && !isPrivate()) setSpace('private', { navigate: false });
+  if (was || isPrivate()) render();
+}
+
+function localLock() {
+  if (!state.vault.unlocked) return;
+  state.vault.unlocked = false;
+  dropPrivate();
+  render();
+}
+
+async function lockNow() {
+  try { await api('POST', '/api/vault/lock'); } catch {}
+  state.vault.unlocked = true; // zodat localLock alles opruimt
+  localLock();
+}
+
+async function afterUnlock(st) {
+  state.vault = { ...state.vault, ...st, unlocked: true, setup: true };
+  vaultView.forget = false;
+  lastActivity = Date.now();
+  lastPing = Date.now();
+  try { state.chats = (await api('GET', '/api/chats')).chats; } catch {}
+  if (isPrivate() && !isLocal(state.model)) state.model = privateModel();
+  if (state.pendingChatId && isPrivate()) {
+    const target = `#/c/${state.pendingChatId}`;
+    state.pendingChatId = null;
+    if (location.hash !== target) location.hash = target;
+    else route();
+  } else {
+    render();
+  }
+  refreshMemoryBadge();
+  if (!el.memorySheet.hidden && memView.space === 'private') loadMemory();
+}
+
+// Teken van leven naar de server, en meteen horen of Privé nog open is.
+async function pingVault(force = false) {
+  const now = Date.now();
+  if (!force && now - lastPing < 60000) return;
+  lastPing = now;
+  try {
+    const st = await api('POST', '/api/vault/ping');
+    const was = state.vault.unlocked;
+    state.vault = { ...state.vault, ...st };
+    if (was && !st.unlocked) { state.vault.unlocked = true; localLock(); }
+    else if (!was && st.unlocked) afterUnlock(st);
+    else if (isPrivate() && !st.unlocked) render();
+  } catch {}
+}
+
+function markActive() {
+  if (!isPrivate() || !state.vault.unlocked) return;
+  lastActivity = Date.now();
+  pingVault();
+}
+for (const ev of ['pointerdown', 'keydown', 'wheel', 'touchstart']) {
+  document.addEventListener(ev, markActive, { passive: true, capture: true });
+}
+
+// Na een kwartier niks doen: deze browser op slot, en de server vergeet zijn sessie.
+function checkIdle() {
+  if (!state.vault.unlocked || Date.now() - lastActivity <= state.vault.lockMinutes * 60000) return;
+  api('POST', '/api/vault/leave').catch(() => {});
+  localLock();
+}
+setInterval(checkIdle, 5000);
+
+el.lockBtn.addEventListener('click', () => { closeNav(); lockNow(); });
+
+function codeInput(placeholder, autocomplete) {
+  const i = document.createElement('input');
+  i.type = 'password';
+  i.placeholder = placeholder;
+  i.autocomplete = autocomplete;
+  i.spellcheck = false;
+  i.autocapitalize = 'off';
+  return i;
+}
+
+// Het slotscherm: code instellen, code invullen, of Privé wissen.
+function vaultPanel() {
+  const mode = !state.vault.setup ? 'setup' : vaultView.forget ? 'forget' : 'unlock';
+  const form = node('form', 'vault-panel');
+  form.dataset.mode = mode;
+  const icon = node('div', 'vault-icon');
+  icon.innerHTML = LOCK_SVG;
+  const msg = node('div', 'vault-msg');
+  const submit = node('button', mode === 'forget' ? 'btn-danger-fill' : 'btn-primary');
+  submit.type = 'submit';
+  const busy = (on, text) => {
+    submit.disabled = on;
+    if (text) submit.textContent = text;
+  };
+
+  if (mode === 'setup') {
+    form.append(icon, node('h2', '', 'Beveilig Privé met een code'));
+    form.append(node('p', '', 'Je privéchats en je privé-memory worden versleuteld met deze code. Zonder code kan niemand erbij, ook niet iemand met je server of een backup.'));
+    const a = codeInput('Code', 'new-password');
+    const b = codeInput('Nog een keer', 'new-password');
+    const hint = node('div', 'vault-hint', 'Minstens 8 tekens. Een korte zin van een paar woorden is sterk en makkelijk te onthouden.');
+    const warn = node('div', 'vault-warn', 'Vergeet je de code, dan is alles in Privé weg. Niemand kan hem terughalen. Bewaar hem in je wachtwoordmanager.');
+    const check = node('label', 'vault-check');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    check.append(cb, node('span', '', 'Ik snap het: zonder deze code is Privé niet terug te halen.'));
+    submit.textContent = 'Privé beveiligen';
+    form.append(a, b, hint, warn, check, submit, msg);
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      msg.textContent = '';
+      if (a.value.trim().length < 8) { msg.textContent = 'Kies een code van minstens 8 tekens.'; a.focus(); return; }
+      if (a.value !== b.value) { msg.textContent = 'De twee codes zijn niet hetzelfde.'; b.select(); return; }
+      if (!cb.checked) { msg.textContent = 'Vink eerst aan dat je het snapt.'; return; }
+      busy(true, 'Versleutelen…');
+      try {
+        const st = await api('POST', '/api/vault/setup', { code: a.value });
+        await afterUnlock(st);
+      } catch (err) {
+        msg.textContent = err.message;
+        busy(false, 'Privé beveiligen');
+      }
+    });
+    setTimeout(() => { if (!touch) a.focus(); }, 30);
+  } else if (mode === 'unlock') {
+    form.append(icon, node('h2', '', 'Privé is op slot'));
+    form.append(node('p', '', 'Vul je code in om je privéchats en je privé-memory te openen.'));
+    const a = codeInput('Code', 'current-password');
+    submit.textContent = 'Openen';
+    const row = node('div', 'vault-row');
+    row.append(a, submit);
+    const foot = node('div', 'vault-foot');
+    foot.append(node('span', '', `Gaat vanzelf weer op slot na ${state.vault.lockMinutes} minuten niks doen.`));
+    const forgot = node('button', 'link-btn', 'Code vergeten?');
+    forgot.type = 'button';
+    forgot.addEventListener('click', () => { vaultView.forget = true; rerenderVault(); });
+    foot.append(forgot);
+    form.append(row, msg, foot);
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      msg.textContent = '';
+      if (!a.value.trim()) { a.focus(); return; }
+      busy(true, 'Openen…');
+      try {
+        const st = await api('POST', '/api/vault/unlock', { code: a.value });
+        a.value = '';
+        await afterUnlock(st);
+      } catch (err) {
+        msg.textContent = err.message;
+        busy(false, 'Openen');
+        a.select();
+      }
+    });
+    setTimeout(() => { if (!touch) a.focus(); }, 30);
+  } else {
+    form.append(icon, node('h2', '', 'Code vergeten?'));
+    form.append(node('p', '', 'Zonder je code kan niemand je privéchats en privé-memory nog lezen, ook Maatje AI zelf niet. Daarom is er geen herstel.'));
+    form.append(node('p', '', 'Wel kun je Privé helemaal wissen en opnieuw beginnen met een nieuwe code. Je zakelijke chats en memory blijven staan.'));
+    const a = document.createElement('input');
+    a.type = 'text';
+    a.placeholder = 'Typ WISSEN';
+    a.autocomplete = 'off';
+    a.autocapitalize = 'characters';
+    submit.textContent = 'Privé wissen';
+    const back = node('button', 'link-btn', 'Terug');
+    back.type = 'button';
+    back.addEventListener('click', () => { vaultView.forget = false; rerenderVault(); });
+    const row = node('div', 'vault-actions');
+    row.append(submit, back);
+    form.append(a, row, msg);
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      msg.textContent = '';
+      if (a.value.trim().toUpperCase() !== 'WISSEN') { msg.textContent = 'Typ WISSEN om Privé te wissen.'; a.focus(); return; }
+      if (!confirm('Alle privéchats en je hele privé-memory definitief wissen?')) return;
+      busy(true, 'Wissen…');
+      try {
+        const st = await api('POST', '/api/vault/forget', { confirm: a.value });
+        state.vault = { ...state.vault, ...st, unlocked: false };
+        vaultView.forget = false;
+        state.chats = state.chats.filter((c) => !c.private);
+        rerenderVault();
+      } catch (err) {
+        msg.textContent = err.message;
+        busy(false, 'Privé wissen');
+      }
+    });
+  }
+  return form;
+}
+
+// Slotscherm in het berichtenvak. Niet opnieuw opbouwen als het er al staat (anders ben je je typwerk kwijt).
+function renderVaultPanel(box) {
+  const mode = !state.vault.setup ? 'setup' : vaultView.forget ? 'forget' : 'unlock';
+  const cur = box.querySelector(':scope > .vault-panel');
+  if (cur && cur.dataset.mode === mode) return;
+  box.replaceChildren(vaultPanel());
+}
+
+function rerenderVault() {
+  render();
+  if (!el.memorySheet.hidden && memView.space === 'private' && !state.vault.unlocked) renderMemoryList();
+}
+
+// Code wijzigen (in het memory-paneel van Privé).
+function changeCodeForm() {
+  const form = node('form', 'vault-change');
+  const old = codeInput('Huidige code', 'current-password');
+  const a = codeInput('Nieuwe code', 'new-password');
+  const b = codeInput('Nieuwe code, nog een keer', 'new-password');
+  const save = node('button', 'btn-primary', 'Code wijzigen');
+  save.type = 'submit';
+  const msg = node('div', 'mem-status');
+  form.append(old, a, b, save, msg);
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    msg.classList.remove('err');
+    if (a.value !== b.value) { msg.classList.add('err'); msg.textContent = 'De twee nieuwe codes zijn niet hetzelfde.'; return; }
+    save.disabled = true;
+    msg.textContent = 'Bezig…';
+    try {
+      await api('POST', '/api/vault/code', { old: old.value, code: a.value });
+      form.replaceChildren(node('div', 'mem-status', 'Je code is gewijzigd. Gebruik voortaan de nieuwe.'));
+    } catch (err) {
+      msg.classList.add('err');
+      msg.textContent = err.message;
+      save.disabled = false;
+    }
+  });
+  return form;
+}
+
+// ---------- Voorstellen voor de privé-memory ----------
+
+let proposalPoll = null;
+
+// Na een antwoord in een privéchat: even kijken of de bijwerker iets voorstelt.
+function watchProposals(chatId, tries = 0) {
+  clearTimeout(proposalPoll);
+  proposalPoll = setTimeout(async () => {
+    if (!state.chat || state.chat.id !== chatId || !state.chat.private || !state.vault.unlocked) return;
+    try {
+      const r = await api('GET', `/api/chats/${chatId}/proposals`, null, { background: true });
+      if (!state.chat || state.chat.id !== chatId) return;
+      const known = new Set(state.proposals.map((p) => p.id));
+      for (const p of r.proposals) {
+        if (known.has(p.id)) continue;
+        state.proposals.push(p);
+        const near = isNearBottom();
+        placeProposal(p);
+        if (near) scrollToBottom(true);
+      }
+      if (r.pending > 0 && tries < 200) watchProposals(chatId, tries + 1);
+    } catch {}
+  }, tries ? 3000 : 1500);
+}
+
+const stripDash = (line) => String(line || '').replace(/^\s*-\s*/, '');
+
+// Naam van een bestand in een voorstel: bij een nieuw bestand de eerste bijnaam ("Lisa"), anders de bestandsnaam.
+function proposalName(it) {
+  return (it.isNew && it.aliases?.[0]) || prettyName({ path: it.path, name: '' });
+}
+
+function proposalTitle(it) {
+  return it.isNew ? `Nieuw bestand: ${proposalName(it)}` : proposalName(it);
+}
+
+function proposalLines(it) {
+  if (it.op === 'append') return [['add', it.line]];
+  if (it.op === 'create') return (it.lines || []).map((l) => ['add', l]);
+  if (it.op === 'replace') return [['del', it.old], ['add', it.new]];
+  if (it.op === 'remove') return [['del', it.old]];
+  return [];
+}
+
+function proposalCard(p) {
+  const box = node('div', 'proposal');
+  box.dataset.id = p.id;
+  const head = node('div', 'approval-head');
+  head.innerHTML = `${LOCK_SVG}<span>Mag dit in je <strong>privé-memory</strong>?</span>`;
+  const list = node('div', 'proposal-items');
+  const checks = [];
+  p.items.forEach((it) => {
+    const row = node('label', 'proposal-item');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = true;
+    checks.push(cb);
+    const text = node('div', 'proposal-text');
+    text.append(node('div', 'proposal-file', proposalTitle(it)));
+    if (it.isNew && it.description) text.append(node('div', 'proposal-desc', it.description));
+    for (const [kind, line] of proposalLines(it)) text.append(node('div', `proposal-line ${kind}`, stripDash(line)));
+    row.append(cb, text);
+    list.append(row);
+  });
+  const actions = node('div', 'approval-actions');
+  const save = node('button', 'btn-primary', 'Opslaan');
+  save.type = 'button';
+  const skip = node('button', 'btn-deny', 'Niet opslaan');
+  skip.type = 'button';
+  const msg = node('span', 'mem-muted');
+  const update = () => {
+    const n = checks.filter((c) => c.checked).length;
+    save.textContent = checks.length > 1 && n < checks.length ? `Opslaan (${n})` : 'Opslaan';
+    save.disabled = n === 0;
+  };
+  for (const c of checks) c.addEventListener('change', update);
+  const answer = async (accept) => {
+    save.disabled = skip.disabled = true;
+    msg.textContent = 'Bezig…';
+    try {
+      const r = await api('POST', `/api/proposals/${p.id}`, { accept });
+      state.proposals = state.proposals.filter((x) => x.id !== p.id);
+      const nameOf = (path) => { const it = p.items.find((x) => x.path === path); return it ? proposalName(it) : fileLabel(path); };
+      const names = [...new Set((r.changed || []).map(nameOf))];
+      box.replaceWith(node('div', 'proposal-done', names.length ? `Opgeslagen in je privé-memory: ${names.join(', ')}.` : 'Niet opgeslagen.'));
+      refreshMemoryBadge();
+    } catch (err) {
+      msg.textContent = err.message;
+      update();
+      skip.disabled = false;
+    }
+  };
+  save.addEventListener('click', () => answer(checks.map((c, i) => (c.checked ? i : -1)).filter((i) => i >= 0)));
+  skip.addEventListener('click', () => answer([]));
+  actions.append(save, skip, msg);
+  box.append(head, list, actions);
+  return box;
+}
+
+// Zet het voorstel onder het antwoord waar het bij hoort (of onderaan).
+function placeProposal(p) {
+  if (el.messages.querySelector(`.proposal[data-id="${CSS.escape(p.id)}"]`)) return;
+  const card = proposalCard(p);
+  const anchor = el.messages.querySelector(`.msg[data-id="${CSS.escape(String(p.messageId))}"]`);
+  if (anchor) anchor.after(card);
+  else el.messages.append(card);
+}
+
 // ---------- Memory ----------
 
 const GROUPS = [
@@ -1109,12 +1660,19 @@ function timeLabel(ts) {
     : d.toLocaleString('nl-NL', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
+const memSpace = () => (el.memorySheet.hidden ? state.space : memView.space);
+const spaceLabel = (sp) => (sp === 'private' ? 'privé' : 'zakelijk');
+
 async function refreshMemoryBadge() {
+  if (memSpace() === 'private' && !state.vault.unlocked) {
+    el.memoryBadge.hidden = true;
+    return;
+  }
   try {
-    const r = await api('GET', '/api/memory');
+    const r = await api('GET', `/api/memory?space=${memSpace()}`, null, { background: true });
     state.memory = r;
     const w = r.writer;
-    const n = w.pending;
+    const n = w.pending + (w.proposals || 0);
     el.memoryBadge.hidden = !(n > 0 || w.lastError);
     el.memoryBadge.textContent = w.lastError && !n ? '!' : String(n);
     el.memoryBadge.classList.toggle('warn', Boolean(w.lastError));
@@ -1122,12 +1680,18 @@ async function refreshMemoryBadge() {
   } catch {}
 }
 
-const memView = { mode: 'list', path: null, search: '', dirty: false };
+const memView = { mode: 'list', path: null, search: '', dirty: false, space: 'work' };
 
 async function loadMemory() {
+  if (memView.space === 'private' && !state.vault.unlocked) {
+    state.memory = null;
+    renderMemoryList();
+    return;
+  }
   try {
-    state.memory = await api('GET', '/api/memory');
+    state.memory = await api('GET', `/api/memory?space=${memView.space}`);
   } catch (err) {
+    if (err.locked) { renderMemoryList(); return; }
     el.memBody.textContent = `Memory kon niet worden geladen: ${err.message}`;
     return;
   }
@@ -1137,6 +1701,7 @@ async function loadMemory() {
 
 async function openMemory(path = null) {
   closeNav();
+  memView.space = state.space;
   el.memorySheet.hidden = false;
   el.memBody.textContent = 'Laden…';
   await loadMemory();
@@ -1153,13 +1718,16 @@ function closeMemory() {
 function writerStatusText(w) {
   if (!w.enabled) return 'Bijwerken staat uit.';
   const parts = [];
+  if (memView.space === 'private') parts.push('In Privé vraagt hij eerst of het mag: je krijgt na een gesprek een voorstel in de chat.');
+  if (w.proposals) parts.push(`${w.proposals} ${w.proposals === 1 ? 'voorstel wacht' : 'voorstellen wachten'} op je, in de chat.`);
   if (w.running) parts.push('Bezig met bijwerken…');
   else if (w.waiting === 'model') parts.push('Er is nog geen model gekozen om de memory bij te werken. Kies er een met Wijzig.');
   else if (w.waiting === 'mac') parts.push(`Wacht tot je ${state.local?.name || 'computer'} bereikbaar is${w.pending ? ` (${w.pending} gesprek${w.pending === 1 ? '' : 'ken'} in de wachtrij)` : ''}.`);
   else if (w.pending) parts.push(`${w.pending} gesprek${w.pending === 1 ? '' : 'ken'} in de wachtrij.`);
   if (w.lastRun) {
-    const changed = (w.lastChanged || []).map(fileLabel).join(', ');
-    parts.push(`Laatst gecheckt ${timeLabel(w.lastRun)}${changed ? `, bijgewerkt: ${changed}` : ', niks nieuws'}.`);
+    const changed = (w.lastChanged || []).map(fileLabel).join(', ') + (w.lastChanged?.length && w.lastSpace ? ` (${spaceLabel(w.lastSpace)})` : '');
+    const proposed = w.lastProposed ? `, voorstel gemaakt` : '';
+    parts.push(`Laatst gecheckt ${timeLabel(w.lastRun)}${changed ? `, bijgewerkt: ${changed}` : proposed || ', niks nieuws'}.`);
   }
   if (w.lastError) parts.push(`Laatste fout: ${w.lastError}`);
   return parts.join(' ') || 'Werkt bij na elk afgerond antwoord.';
@@ -1168,13 +1736,37 @@ function writerStatusText(w) {
 function renderMemoryList() {
   memView.mode = 'list';
   memView.path = null;
-  el.memTitle.textContent = 'Memory';
+  el.memTitle.textContent = memView.space === 'private' ? 'Memory · privé' : 'Memory · zakelijk';
   el.memBack.hidden = true;
   const box = el.memBody;
   box.replaceChildren();
+  const locked = memView.space === 'private' && !state.vault.unlocked;
   const m = state.memory;
-  if (!m) return;
-  const w = m.writer;
+  if (!m && !locked) return;
+  const w = m?.writer;
+
+  // Wisselen tussen zakelijke en privé-memory
+  const sw = node('div', 'space-switch in-sheet');
+  for (const [sp, text] of [['work', 'Zakelijk'], ['private', 'Privé']]) {
+    const b = node('button', sp === memView.space ? 'active' : '', text);
+    b.type = 'button';
+    b.addEventListener('click', async () => {
+      if (memView.space === sp) return;
+      memView.space = sp;
+      memView.search = '';
+      el.memBody.textContent = 'Laden…';
+      await loadMemory();
+    });
+    sw.append(b);
+  }
+  box.append(sw);
+  if (locked) {
+    box.append(vaultPanel());
+    return;
+  }
+  if (memView.space === 'private') {
+    box.append(node('p', 'mcp-intro', 'Deze memory gebruiken alleen je privéchats, en hij staat versleuteld met je code. Zakelijke chats zien hier niks van, en privéchats zien je zakelijke memory niet.'));
+  }
 
   // Bijwerker
   const card = document.createElement('div');
@@ -1196,7 +1788,9 @@ function renderMemoryList() {
   row2.className = 'mem-row';
   const who = document.createElement('span');
   who.className = 'mem-muted';
-  who.textContent = w.model ? `Door: ${shortModelName(w.model)}` : 'Door: nog geen model gekozen';
+  who.textContent = memView.space === 'private'
+    ? `Door: ${isLocal(w.model) ? shortModelName(w.model) : 'het lokale model van de chat'}`
+    : w.model ? `Door: ${shortModelName(w.model)}` : 'Door: nog geen model gekozen';
   const change = document.createElement('button');
   change.type = 'button';
   change.className = 'link-btn';
@@ -1281,7 +1875,7 @@ function renderMemoryList() {
     if (!hist.open || hist.dataset.loaded) return;
     hist.dataset.loaded = '1';
     try {
-      const r = await api('GET', '/api/memory/history');
+      const r = await api('GET', `/api/memory/history?space=${memView.space}`);
       if (!r.history.length) {
         const n = document.createElement('div');
         n.className = 'picker-note';
@@ -1322,13 +1916,31 @@ function renderMemoryList() {
     }
   });
   box.append(hist);
+
+  // Privé: op slot zetten en code wijzigen
+  if (memView.space === 'private') {
+    const pc = node('div', 'mem-card vault-card');
+    const top = node('div', 'mem-row');
+    const t = node('span', 'mem-muted', `Versleuteld met je code. Gaat op slot na ${state.vault.lockMinutes} minuten niks doen.`);
+    top.append(t);
+    const actions = node('div', 'mcp-actions');
+    const lockB = node('button', 'btn-small', 'Op slot');
+    lockB.type = 'button';
+    lockB.addEventListener('click', () => { lockNow(); });
+    const changeB = node('button', 'link-btn', 'Code wijzigen');
+    changeB.type = 'button';
+    changeB.addEventListener('click', () => { changeB.replaceWith(changeCodeForm()); });
+    actions.append(lockB, changeB);
+    pc.append(top, actions);
+    box.append(pc);
+  }
 }
 
 async function openMemoryFile(path, presetContent = null) {
   let content = presetContent;
   if (content === null) {
     try {
-      content = (await api('GET', `/api/memory/file?path=${encodeURIComponent(path)}`)).content;
+      content = (await api('GET', `/api/memory/file?path=${encodeURIComponent(path)}&space=${memView.space}`)).content;
     } catch (err) {
       alert(err.message);
       return;
@@ -1337,7 +1949,7 @@ async function openMemoryFile(path, presetContent = null) {
   memView.mode = 'file';
   memView.path = path;
   memView.dirty = presetContent !== null;
-  el.memTitle.textContent = path;
+  el.memTitle.textContent = `${path}${memView.space === 'private' ? ' · privé' : ''}`;
   el.memBack.hidden = false;
   const box = el.memBody;
   box.replaceChildren();
@@ -1358,10 +1970,10 @@ async function openMemoryFile(path, presetContent = null) {
   msg.className = 'mem-muted';
   save.addEventListener('click', async () => {
     try {
-      await api('PUT', '/api/memory/file', { path, content: ta.value });
+      await api('PUT', '/api/memory/file', { path, content: ta.value, space: memView.space });
       memView.dirty = false;
       msg.textContent = 'Opgeslagen.';
-      state.memory = await api('GET', '/api/memory');
+      state.memory = await api('GET', `/api/memory?space=${memView.space}`);
     } catch (err) {
       msg.textContent = err.message;
     }
@@ -1373,14 +1985,40 @@ async function openMemoryFile(path, presetContent = null) {
   del.addEventListener('click', async () => {
     if (!confirm(`${path} verwijderen? In de geschiedenis blijft hij terug te vinden.`)) return;
     try {
-      await api('DELETE', `/api/memory/file?path=${encodeURIComponent(path)}`);
+      await api('DELETE', `/api/memory/file?path=${encodeURIComponent(path)}&space=${memView.space}`);
       memView.dirty = false;
+      memView.mode = 'list';
       await loadMemory();
     } catch (err) {
       msg.textContent = err.message;
     }
   });
-  actions.append(save, msg, del);
+  // Verplaatsen naar de andere ruimte (alleen voor bestaande bestanden)
+  const other = memView.space === 'private' ? 'work' : 'private';
+  const move = node('button', 'btn-small', other === 'private' ? 'Naar privé' : 'Naar zakelijk');
+  move.type = 'button';
+  move.hidden = presetContent !== null;
+  move.addEventListener('click', async () => {
+    if (memView.dirty && !confirm('Je wijzigingen zijn nog niet opgeslagen. Toch verplaatsen?')) return;
+    const extra = other === 'private'
+      ? ' Hij wordt versleuteld met je code, en de oude versies gaan ook uit de zakelijke geschiedenis.'
+      : ' Hij staat dan weer onversleuteld bij je zakelijke memory.';
+    if (!confirm(`${path} verplaatsen naar ${spaceLabel(other)}? Daarna zien alleen ${other === 'private' ? 'privéchats' : 'zakelijke chats'} dit bestand.${extra}`)) return;
+    try {
+      const r = await api('POST', '/api/memory/move', { path, from: memView.space });
+      memView.dirty = false;
+      memView.mode = 'list';
+      await loadMemory();
+      if (r.purged === false) {
+        alert('Verplaatst en versleuteld. De oude versies uit de zakelijke geschiedenis halen lukte nog niet; de app probeert dat opnieuw zodra je Privé weer opent.');
+      }
+    } catch (err) {
+      msg.textContent = err.locked
+        ? (state.vault.setup ? 'Privé is op slot. Open Privé eerst met je code, dan kan het.' : 'Stel eerst een code in voor Privé (via de schakelaar Privé).')
+        : err.message;
+    }
+  });
+  actions.append(save, move, msg, del);
   box.append(ta, actions);
   if (!touch) ta.focus();
 }
@@ -1607,7 +2245,7 @@ async function uploadSkills(files) {
     try {
       const res = await fetch('/api/skills/upload', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(f.name) },
+        headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(f.name), 'X-Maatje': '1' },
         body: f,
       });
       const j = await res.json().catch(() => ({}));
@@ -2098,7 +2736,10 @@ document.addEventListener('keydown', (e) => {
 
 // Terug naar de app na een tijdje weg (telefoon): chat verversen.
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible' || !state.chat) return;
+  if (document.visibilityState !== 'visible') return;
+  checkIdle();
+  if (isPrivate()) pingVault(true);
+  if (!state.chat) return;
   const last = state.messages[state.messages.length - 1];
   if (last && last.status === 'streaming') openChat(state.chat.id);
 });

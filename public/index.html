@@ -27,6 +27,13 @@
   <div class="app">
     <aside class="sidebar" id="sidebar">
       <div class="brand">Maatje <em>AI</em></div>
+      <div class="space-switch" id="spaceSwitch" role="tablist" aria-label="Zakelijk of privé">
+        <button type="button" role="tab" data-space="work">Zakelijk</button>
+        <button type="button" role="tab" data-space="private">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+          Privé
+        </button>
+      </div>
       <div class="sidebar-top">
         <button class="btn-new" id="newChat" type="button">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
@@ -35,6 +42,10 @@
       </div>
       <nav class="chat-list" id="chatList" aria-label="Chats"></nav>
       <div class="sidebar-bottom">
+        <button class="side-link" id="lockBtn" type="button" hidden title="Privé op slot zetten">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+          Privé op slot
+        </button>
         <button class="side-link" id="memoryBtn" type="button">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5zM5 19.5A1.5 1.5 0 0 0 6.5 21H19M9 7h6"/></svg>
           Memory
@@ -62,6 +73,10 @@
         <button class="icon-btn menu-btn" id="menuBtn" type="button" aria-label="Chats tonen">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
         </button>
+        <span class="space-chip" id="spaceChip" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+          Privé
+        </span>
         <button class="title" id="chatTitle" type="button" title="Naam wijzigen">Nieuwe chat</button>
         <select class="effort-sel" id="effortSel" aria-label="Nadenken" hidden></select>
         <button class="model-btn" id="modelBtn" type="button">

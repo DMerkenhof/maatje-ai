@@ -3,7 +3,16 @@
 // Lokale modellen krijgen in de app een id dat begint met "local/".
 
 const BASE = (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/$/, '');
-const KEY = (process.env.OPENROUTER_API_KEY || '').trim();
+// De key komt uit .env, of uit de app zelf (dan staat hij in de database).
+const ENV_KEY = (process.env.OPENROUTER_API_KEY || '').trim();
+let KEY = ENV_KEY;
+
+export const keySource = () => (ENV_KEY ? 'env' : KEY ? 'app' : null);
+export function setApiKey(key) {
+  if (ENV_KEY) return; // .env gaat voor
+  KEY = String(key || '').trim();
+  modelCache = { at: 0, models: null };
+}
 
 // Voor Ollama gebruiken we de eigen API (/api/chat), omdat we daar de contextlengte
 // kunnen meegeven. Of je nu .../v1 invult of niet, maakt dus niet uit.
@@ -13,11 +22,12 @@ export const LOCAL_NAME = (process.env.LOCAL_NAME || 'Mac').trim();
 export const LOCAL_PREFIX = 'local/';
 
 export const hasKey = () => KEY.length > 0;
+export const NO_KEY_MESSAGE = 'Er is nog geen OpenRouter-key. Vul hem in bij de modelkiezer of zet hem in .env';
 export const hasLocal = () => LOCAL_ROOT.length > 0;
 export const isLocalModel = (id) => typeof id === 'string' && id.startsWith(LOCAL_PREFIX);
 
 const openrouterHeaders = () => ({
-  Authorization: `Bearer ${KEY}`,
+  ...(KEY ? { Authorization: `Bearer ${KEY}` } : {}),
   'Content-Type': 'application/json',
   'X-Title': 'Maatje AI',
 });
@@ -472,7 +482,7 @@ export async function completeJSON({ model, system, user, schema, timeoutMs = 10
     const json = await res.json();
     raw = json.message?.content || '';
   } else {
-    if (!hasKey()) throw new Error('Er staat nog geen OpenRouter-key in .env');
+    if (!hasKey()) throw new Error(NO_KEY_MESSAGE);
     const res = await fetch(`${BASE}/chat/completions`, {
       method: 'POST',
       headers: openrouterHeaders(),

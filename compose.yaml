@@ -1,5 +1,5 @@
 services:
-  chat:
+  maatje-ai:
     build: .
     container_name: maatje-ai
     restart: unless-stopped
@@ -13,6 +13,11 @@ services:
       - ./data:/data
     ports:
       # Alleen bereikbaar op deze computer zelf. Via Tailscale maak je hem veilig bereikbaar
-      # op je andere apparaten (zie README). Wil je hem op je thuisnetwerk, maak er dan
-      # "3080:3080" van en laat het wachtwoord aan.
-      - "127.0.0.1:3080:3080"
+      # op je andere apparaten (zie README). Andere poort nodig? Zet APP_PORT in .env.
+      - "127.0.0.1:${APP_PORT:-3080}:3080"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
